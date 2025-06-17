@@ -1,9 +1,8 @@
 import { defineStore } from 'pinia'
-import { getSocket } from '@/socket'
+import { getSocketSync } from '@/socket'
 import { v4 as uuidv4 } from 'uuid'
-import {db} from "@/db.js";
 
-const socket = await getSocket();
+const socket = await getSocketSync();
 
 export const useOrderStore = defineStore('orderStore', {
     state: () => ({
@@ -37,7 +36,6 @@ export const useOrderStore = defineStore('orderStore', {
                 totale,
                 timestamp: Date.now()
             }
-            await db.orders.add(newOrder)
             this.orders.push(newOrder)
             this.socket.emit('new-order', newOrder)
         }

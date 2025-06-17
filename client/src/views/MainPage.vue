@@ -1,10 +1,7 @@
 <script setup>
-const { type } = defineProps({
-    type: {
-        type: String,
-        required: true,
-    }
-});
+import { useDeviceStore } from '@/deviceStore'
+
+const deviceStore = useDeviceStore()
 </script>
 
 <template>
@@ -13,13 +10,17 @@ const { type } = defineProps({
             <div class="title-text">Scegli cosa fare</div>
         </div>
         <div class="button-disposition">
-            <div v-if="type == 'master'" class="prodotto">
+            <div v-if="deviceStore.isServer" class="prodotto">
                 <router-link :to="{name: 'SettingProduct'}" class="single-button">
                     <button class="product">Settings product</button>
                 </router-link>
-
             </div>
-            <div v-if="type == 'master'" class="saldo">
+            <div v-if="deviceStore.isServer" class="prodotto">
+                <router-link :to="{name: 'SettingCategorie'}" class="single-button">
+                    <button class="product">Settings Categorie</button>
+                </router-link>
+            </div>
+            <div v-if="deviceStore.isServer" class="saldo">
                 <router-link :to="{name: 'SettingEconomics'}" class="single-button">
                     <button class="button-mobile-device">Economic setting</button>
                 </router-link>
@@ -41,6 +42,7 @@ const { type } = defineProps({
     .button-disposition{
         display: flex;
         flex-direction: row;
+        justify-content: center;
         gap: 100px;
         button{
             width: 200px;
@@ -61,3 +63,4 @@ const { type } = defineProps({
     }
 }
 </style>
+
