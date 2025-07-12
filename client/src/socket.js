@@ -9,7 +9,7 @@ export async function createSocket() {
     if (socket) return socket
     const res = await fetch(`http://${urlServer}:3000/get-socket-ip`)
     const data = await res.json()
-    socket = io(`http://${data.ip}:3000`)
+    socket = io(`http://${urlServer}:3000`)
     return socket
 }
 

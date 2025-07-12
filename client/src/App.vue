@@ -6,11 +6,13 @@ import { onMounted } from 'vue'
 import { useDeviceStore } from '@/deviceStore'
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/authStore'
 
 
 const showLogoutModal = ref(false)
 const router = useRouter()
 const deviceStore = useDeviceStore()
+const authStore = useAuthStore()
 
 function cancelLogout() {
     showLogoutModal.value = false
@@ -19,7 +21,7 @@ function cancelLogout() {
 function confirmLogout() {
     deviceStore.$reset()
     showLogoutModal.value = false
-
+    authStore.logout() // Effettua il logout
     router.push({ name: 'Home' })
 }
 </script>

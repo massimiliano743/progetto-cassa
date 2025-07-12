@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
     "dev": "nodemon index.js"
   },
   "keywords": [],
@@ -12,8 +13,15 @@
   "dependencies": {
     "better-sqlite3": "^11.10.0",
     "cors": "^2.8.5",
+    "escpos": "^3.0.0-alpha.6",
+    "escpos-usb": "^3.0.0-alpha.4",
     "express": "^5.1.0",
-    "socket.io": "^4.8.1"
+    "handlebars": "^4.7.8",
+    "node-thermal-printer": "^4.5.0",
+    "pdfkit": "^0.17.1",
+    "puppeteer": "^24.11.2",
+    "socket.io": "^4.8.1",
+    "usb": "^2.15.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.10"

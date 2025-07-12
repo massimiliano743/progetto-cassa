@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scontrino</title>
+    <style>
+        body {
+            /* Larghezza del scontrino per il PDF */
+            width: 300px;
+            background-color: white; /* Per lo sfondo del "foglio", se printBackground è true */
+            margin: 0;
+            padding: 10px; /* Padding interno per non incollare il contenuto ai bordi */
+            font-family: 'Arial', sans-serif;
+            font-size: 10px; /* Dimensione base del font */
+            color: #333; /* Colore testo generale */
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        .header .logo img {
+            max-width: 100%; /* Si adatta alla larghezza del body */
+            height: auto;
+            display: block; /* Rimuove lo spazio extra sotto l'immagine */
+            margin: 0 auto 5px auto; /* Centra l'immagine e aggiunge un piccolo margine sotto */
+            max-height: 100px; /* Limita l'altezza del logo per scontrini */
+            object-fit: contain; /* Assicura che l'immagine si adatti senza distorcere */
+        }
+        .header .titolo {
+            font-size: 22px;
+            font-weight: bold;
+            margin-bottom: 2px;
+        }
+        .header .sottotitolo {
+            font-size: 16px;
+            font-weight: normal;
+            margin-bottom: 5px;
+        }
+        .header .date-time, .header .scontrino-numero {
+            font-size: 10px;
+            margin-top: 2px;
+        }
+
+        /* --- Stili per l'allineamento delle colonne --- */
+        .items-container {
+            display: flex;
+            flex-direction: column;
+            width: 100%; /* Assicurati che il contenitore occupi tutta la larghezza disponibile */
+        }
+
+        /* Stile comune per le righe delle colonne (intestazione e prodotti) */
+        .column-row {
+            display: flex;
+            justify-content: space-between; /* Distribuisce lo spazio tra gli elementi */
+            align-items: flex-start; /* Allinea il testo in alto all'interno della riga */
+            font-size: 10px;
+        }
+
+        .separator {
+            margin: 10px 0;
+            padding-bottom: 5px;
+            border-bottom: 1px dashed #000; /* Linea tratteggiata */
+            font-weight: bold;
+        }
+
+        /* Definizione delle larghezze flessibili per ciascuna "colonna" */
+        .column-row .col-prodotto {
+            flex-grow: 2; /* Cresce di più per il nome prodotto */
+            flex-shrink: 1;
+            flex-basis: 50%; /* Base iniziale del 50% */
+            text-align: left;
+            padding-right: 5px; /* Spazio tra le colonne */
+            word-break: break-word; /* Rompe le parole lunghe se necessario */
+        }
+        .column-row .col-quantita {
+            flex-grow: 0.5;
+            flex-shrink: 1;
+            flex-basis: 20%; /* Base iniziale del 20% */
+            text-align: center;
+        }
+        .column-row .col-prezzo {
+            flex-grow: 1;
+            flex-shrink: 1;
+            flex-basis: 30%; /* Base iniziale del 30% */
+            text-align: right;
+        }
+
+        /* Stile per i singoli item del prodotto */
+        .product-item {
+            margin-bottom: 5px; /* Spazio tra le righe prodotto */
+        }
+        /* --- Fine stili per allineamento --- */
+
+        .total-section {
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px dashed #000; /* Linea tratteggiata sopra il totale */
+            text-align: right;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .footer {
+            margin-top: 20px;
+            text-align: center;
+            font-size: 9px;
+            color: #777;
+        }
+        /* Stili per il PDF generato da Puppeteer */
+        @page {
+            size: 200px auto; /* Larghezza fissa, altezza automatica */
+            margin: 10px; /* Nessun margine predefinito della pagina */
+        }
+    </style>
+</head>
+<body>
+<div class="header">
+    <div class="logo">
+        <img src="{{logoBase64}}" alt="Logo Azienda"/>
+    </div>
+    <div class="titolo">{{titoloAzienda}}</div>
+    <div class="sottotitolo">{{sottotitoloAzienda}}</div>
+
+    <div class="date-time">Data: {{dataOra}}</div>
+    <div class="scontrino-numero">Numero scontrino: {{numeroScontrino}}</div>
+
+</div>
+
+<div class="items-container">
+    <div class="separator column-row">
+        <div class="col-prodotto">Prodotto</div>
+        <div class="col-quantita">N°</div>
+        <div class="col-prezzo">TOT</div>
+    </div>
+
+    {{#each prodotti}}
+    <div class="product-item column-row">
+        <div class="col-prodotto">
+            {{this.nome}}
+            {{#if (gt this.quantita 1)}}
+            <br>
+            <small style="font-size: 8px;">€{{this.prezzoUnitario}} cad.</small>
+            {{/if}}
+        </div>
+        <div class="col-quantita">{{this.quantita}}</div>
+        <div class="col-prezzo">€{{this.totale}}</div>
+    </div>
+    {{/each}}
+</div>
+
+<div class="total-section">
+    Totale: €{{totaleOrdine}}
+</div>
+<div class="footer">
+    Grazie per il tuo acquisto!
+</div>
+</body>
+</html>

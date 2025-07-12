@@ -2,6 +2,7 @@
 import { computed } from "vue";
 
 defineProps({
+    idProdotto: Number,
   prodottoNome: String,
   prezzo: Number,
   quantita: Number,
@@ -17,10 +18,10 @@ function addToScontrino(prodotto) {
 </script>
 
 <template>
-    <div class="prodotto-pagina-cassa"
-         :class="tipologia"
+    <div class="prodotto-pagina-cassa "
+         :id="idProdotto"
          :style="{ backgroundColor: colore }"
-         @click="addToScontrino({ nome: prodottoNome, prezzo, quantita })">
+         @click="addToScontrino({ nome: prodottoNome, prezzo, quantita, idProdotto })">
         <div class="nome-prodotto">
             {{ prodottoNome }}
         </div>
