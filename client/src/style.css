@@ -117,6 +117,12 @@ button:focus-visible {
     display: flex;
     justify-content: space-around;
   }
+  .hidden {
+    display: none;
+  }
+  .visible{
+    display: block;
+  }
 }
 
 @media (prefers-color-scheme: light) {

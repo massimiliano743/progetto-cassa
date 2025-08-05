@@ -43,14 +43,48 @@ export const useOrderStore = defineStore('orderStore', {
         },
         async removeOrder(uuid) {
             const socket = getSocketSync() || await createSocket();
-
-            socket.emit('remove-order', uuid, (res) => {
+            socket.emit('remove-single-product-in-order', uuid, (res) => {
                 if (!res || res.success === false) {
                     const errorMsg = res?.error || 'Errore sconosciuto nella rimozione ordine';
                     alert(`⚠️ Errore: ${errorMsg}`);
                     return;
                 }
                 this.loadOrders();
+            });
+        },
+        async removeSingleProductOrder(id) {
+            const socket = getSocketSync() || await createSocket();
+            return new Promise((resolve, reject) => {
+                socket.emit('remove-single-product-in-order', id, (res) => {
+                    if (!res || res.error) {
+                        const errorMsg = res?.error || 'Errore sconosciuto nella rimozione prodotto';
+                        alert(`⚠️ Errore: ${errorMsg}`);
+                        reject(errorMsg);
+                        return;
+                    }
+                    console.log('res', res);
+                    this.loadOrders();
+                    resolve({
+                        prodotti: res.prodotti,
+                        orderId: id
+                    });
+                });
+            });
+        },
+        async updateOrder(newOrder,id) {
+            const socket = getSocketSync() || await createSocket();
+            return new Promise((resolve, reject) => {
+                socket.emit('updateOrder', id, newOrder, (res) => {
+                    if (!res || res.success === false) {
+                        const errorMsg = res?.error || 'Errore sconosciuto nella rimozione prodotto';
+                        alert(`⚠️ Errore: ${errorMsg}`);
+                        reject(errorMsg);
+                        return;
+                    }
+                    console.log('res---', res);
+                    this.loadOrders();
+                    resolve(res);
+                });
             });
         },
         async clearOrders() {

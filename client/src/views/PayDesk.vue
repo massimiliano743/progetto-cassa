@@ -8,6 +8,16 @@ const prodottoStore = useProdottoStore()
 const orderStore = useOrderStore()
 
 const showDeleteOrder = ref(false)
+const showDeleteOrderSingleProduct = ref(false)
+
+const showProductModal = ref(false);
+const prodottiDaSelezionare = ref([]);
+const prodottiSelezionati = ref([]);
+const prodottiSelezionatiAggiornati = ref([]);
+// Nuovo oggetto reattivo per le quantità selezionate nella modale
+const quantitàSelezionate = reactive({});
+const orderIdModaleRemoveSingleProduct = ref(null);
+
 
 
 const quantitaLocali = reactive({});
@@ -110,9 +120,7 @@ function annullaOrdine() {
     showDeleteOrder.value = true;
     console.log('Ordine annullato');
 }
-function chiudiModaleNo(){
-    showDeleteOrder.value = false;
-}
+
 function confermaEliminazioneSingola() {
     let orderNumber = document.querySelector('#ordineDaEliminare').value;
     if (!orderNumber) {
@@ -121,11 +129,128 @@ function confermaEliminazioneSingola() {
     }else{
         orderStore.removeOrder(orderNumber);
     }
-    console.log('Eliminazione ordine singolo confermata'+orderNumber);
+    alert('Eliminazione ordine confermata'+orderNumber);
+    showDeleteOrder.value= false;
+}
+function stornaElementoDaOrdine(){
+    showDeleteOrderSingleProduct.value= true;
+    console.log('prodotto stornato');
+}
+async function confermaEliminazioneSingleProduct() {
+    let orderNumber = document.querySelector('#ordineDaEliminareSingoloProdotto').value;
+    if (!orderNumber) {
+        alert('Inserisci un numero ordine valido');
+        return;
+    }
+    try {
+        const { prodotti, orderId } = await orderStore.removeSingleProductOrder(orderNumber);
+        orderIdModaleRemoveSingleProduct.value = orderId;
+        if (Array.isArray(prodotti) && prodotti.length > 0) {
+            prodottiDaSelezionare.value = prodotti;
+            apriModaleProdotti(prodotti);
+        } else {
+            alert('Nessun prodotto trovato per questo ordine.');
+        }
+    } catch (error) {
+        alert(`⚠️ Errore: ${error}`);
+    }
+    showDeleteOrderSingleProduct.value = false;
+}
+function apriModaleProdotti(prodotti) {
+    prodottiDaSelezionare.value = prodotti; // [{id, nome, quantita}, ...]
+    prodottiSelezionati.value = [];
+    // Inizializza le quantità selezionate con la quantità massima disponibile
+    prodotti.forEach(p => {
+        quantitàSelezionate[p.id] = p.quantita || 1;
+    });
+    showProductModal.value = true;
+}
+// Calcola quante volte ogni prodotto compare in prodottiDaSelezionare
+const occorrenzeProdotti = computed(() => {
+    const occ = {};
+    prodottiDaSelezionare.value.forEach(p => {
+        occ[p.id] = (occ[p.id] || 0) + (p.quantita || 1);
+    });
+    return occ;
+});
+// Calcola prodotti unici per la modale prodotti (per id)
+const prodottiUnici = computed(() => {
+  const mappa = {};
+  prodottiDaSelezionare.value.forEach(p => {
+    if (!mappa[p.id]) mappa[p.id] = p;
+  });
+  return Object.values(mappa);
+});
+// Funzione per decrementare la quantità selezionata (solo rimozione)
+let inter = {}; // Tracciamento quantità per ogni prodotto
 
-    chiudiModaleNo();
+function incrementaQuantitaSelezionata(id) {
+    id = Number(id); // sicurezza
+    const prodotto = prodottiDaSelezionare.value.find(p => p.id === id);
+    const quantitaAttuale = prodottoStore.prodotti.find(p => p.id === id)?.quantita || 0;
+
+    if (!prodotto) return;
+
+    if (inter[id] == null) inter[id] = 0;
+
+    const quantitaCorrente = Number(prodotto.quantita) || 0;
+    const quantitàTotale = quantitaCorrente + quantitaAttuale;
+        //da rivedere questo, non torna con il controllo
+    if (quantitaCorrente + inter[id] < quantitàTotale) {
+        prodotto.quantita = quantitaCorrente + 1;
+        inter[id]++;
+    }
+
+    console.log(`inter[${id}] = ${inter[id]}`);
 }
 
+function decrementaQuantitaSelezionata(id) {
+    id = Number(id); // sicurezza
+    const prodotto = prodottiDaSelezionare.value.find(p => p.id === id);
+
+    if (!prodotto) return;
+
+    const quantitaCorrente = Number(prodotto.quantita) || 0;
+
+    if (quantitaCorrente > 1) {
+        prodotto.quantita = quantitaCorrente - 1;
+
+        if (inter[id] == null) inter[id] = 0;
+        inter[id]--;
+
+        if (inter[id] < 0) inter[id] = 0; // opzionale: non andare sotto zero
+    }
+
+    console.log(`inter[${id}] = ${inter[id]}`);
+}
+function closeProductModal() {
+    showProductModal.value = false;
+    prodottiSelezionati.value = [];
+    prodottiSelezionatiAggiornati.value = [];
+}
+async function confermaSelezioneProdotti(){
+    let modal = document.querySelector('#remove-single-product-modal');
+    try{
+        modal.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
+            const idProdotto = checkbox.value;
+            if (checkbox.checked) {
+                const quantita = 0;
+                prodottiSelezionatiAggiornati.value.push({ id: idProdotto, quantita });
+            }
+            else {
+                const quantita = occorrenzeProdotti.value[idProdotto];
+                prodottiSelezionatiAggiornati.value.push({ id: idProdotto, quantita });
+            }
+        });
+        console.log('Prodotti selezionati:', prodottiSelezionatiAggiornati.value);
+        orderStore.updateOrder(prodottiSelezionatiAggiornati.value, orderIdModaleRemoveSingleProduct.value);
+        alert('Prodotti aggiornati con successo nel ordine ' + orderIdModaleRemoveSingleProduct.value);
+    }
+    catch (error) {
+        alert(`⚠️ Errore: ${error}`);
+    }
+    closeProductModal();
+}
 
 </script>
 
@@ -191,8 +316,46 @@ function confermaEliminazioneSingola() {
             <p>Inserisci numero ordine da Eliminare <br>L'azione è IRREVERSIBILE</p>
             <input type="text" id="ordineDaEliminare" placeholder="Numero Ordine" />
             <div class="modal-actions">
-                <button @click="chiudiModaleNo">No</button>
+                <button @click="showDeleteOrder= false;">No</button>
                 <button @click="confermaEliminazioneSingola">Sì</button>
+            </div>
+        </div>
+    </div>
+    <!-- Modale eliminazione Singolo ordine -->
+    <div v-if="showDeleteOrderSingleProduct" class="modal-overlay">
+        <div class="modal">
+            <p>Inserisci numero ordine da Eliminare <br>L'azione è IRREVERSIBILE</p>
+            <input type="text" id="ordineDaEliminareSingoloProdotto" placeholder="Numero Ordine" />
+            <div class="modal-actions">
+                <button @click="showDeleteOrderSingleProduct = false">No</button>
+                <button @click="confermaEliminazioneSingleProduct">Sì</button>
+            </div>
+        </div>
+    </div>
+    <!-- Modale eliminazione Singolo ordine -->
+    <div v-if="showProductModal" class="modal-overlay" >
+        <div class="modal" id="remove-single-product-modal" :idOrder="orderIdModaleRemoveSingleProduct">
+            <h3>Seleziona i prodotti da rimuovere</h3>
+            <div v-for="prodotto in prodottiUnici" :key="prodotto.id" class="checkbox-row">
+                <input
+                    type="checkbox"
+                    :value="prodotto.id"
+                    v-model="prodottiSelezionati"
+                    :id="prodotto.id"
+                    :class="['button-remove-quantity',{ 'hide-quantity-controls': occorrenzeProdotti[prodotto.id] > 1 }]"
+                />
+                <label :for="'prodotto-' + prodotto.id" class="button-quantity-controls">{{ prodotto.nome }}</label>
+                <div :class="['quantity-controls', { 'hide-quantity-controls': occorrenzeProdotti[prodotto.id] < 1 }]">
+                    <div @click="decrementaQuantitaSelezionata(prodotto.id)" :class="['button-remove-quantity',{ 'hide-quantity-controls': occorrenzeProdotti[prodotto.id] <= 1 }]"></div>
+                    <span>{{ occorrenzeProdotti[prodotto.id] }}</span>
+                    <div @click="incrementaQuantitaSelezionata(prodotto.id)" :class="['button-add-quantity']"></div>
+
+                </div>
+
+            </div>
+            <div class="modal-actions">
+                <button @click="closeProductModal">Annulla</button>
+                <button @click="confermaSelezioneProdotti">Conferma</button>
             </div>
         </div>
     </div>
@@ -313,5 +476,65 @@ function confermaEliminazioneSingola() {
     border: none;
     padding-bottom: 0;
     margin-bottom: 0;
+}
+.modal-overlay{
+    .checkbox-row{
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 0.5rem;
+        padding: 0.5rem 0;
+        width: 100%;
+        label {
+            flex: 1 1 auto;
+            text-align: left;
+            font-size: 1.1rem;
+            font-weight: 500;
+            margin-right: auto;
+        }
+        .quantity-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            margin-left: 1rem;
+            .button-remove-quantity {
+                background-image: url("data:image/svg+xml,%3C%3Fxml version='1.0' encoding='iso-8859-1'%3F%3E%3C!-- Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools --%3E%3Csvg height='20px' width='20' version='1.1' id='Layer_1' xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' viewBox='0 0 496.158 496.158' xml:space='preserve'%3E%3Cpath style='fill:%23E04F5F;' d='M0,248.085C0,111.063,111.069,0.003,248.075,0.003c137.013,0,248.083,111.061,248.083,248.082 c0,137.002-111.07,248.07-248.083,248.07C111.069,496.155,0,385.087,0,248.085z'/%3E%3Cpath style='fill:%23FFFFFF;' d='M383.546,206.286H112.612c-3.976,0-7.199,3.225-7.199,7.2v69.187c0,3.976,3.224,7.199,7.199,7.199 h270.934c3.976,0,7.199-3.224,7.199-7.199v-69.187C390.745,209.511,387.521,206.286,383.546,206.286z'/%3E%3C/svg%3E");
+                background-repeat: no-repeat;
+                height: 30px;
+                width: 30px;
+                background-position: center;
+                cursor: pointer;
+            }
+            .button-add-quantity{
+                background-image: url("data:image/svg+xml,%3C%3Fxml version='1.0' encoding='utf-8'%3F%3E%3C!-- Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools --%3E%3Csvg width='20px' height='20px' viewBox='0 0 1024 1024' class='icon' version='1.1' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M512 512m-448 0a448 448 0 1 0 896 0 448 448 0 1 0-896 0Z' fill='%234CAF50' /%3E%3Cpath d='M448 298.666667h128v426.666666h-128z' fill='%23FFFFFF' /%3E%3Cpath d='M298.666667 448h426.666666v128H298.666667z' fill='%23FFFFFF' /%3E%3C/svg%3E");
+                background-repeat: no-repeat;
+                height: 30px;
+                width: 30px;
+                background-position: center;
+                cursor: pointer;
+            }
+            button:hover {
+                background: #b8323a;
+            }
+            span {
+                min-width: 24px;
+                text-align: center;
+                font-size: 1.1rem;
+                font-weight: 600;
+            }
+        }
+        .hide-quantity-controls {
+            visibility: hidden;
+            pointer-events: none;
+        }
+    }
+    .checkbox-row input[type="checkbox"] {
+        margin-right: 1rem;
+        max-width: 1rem;
+        align-self: flex-start;
+    }
+    .button-quantity-controls{
+        display: flex;
+    }
 }
 </style>

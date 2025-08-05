@@ -9,7 +9,8 @@ const fsp = require('fs/promises');
 const handlebars = require('handlebars');
 const PDFDocument = require('pdfkit');
 const puppeteer = require('puppeteer');
-const { exec } = require('child_process');
+const { exec, execSync } = require('child_process');
+const os = require('os');
 
 const app = express()
 app.use(cors())
@@ -22,8 +23,24 @@ const io = new Server(server, {
     }
 })
 
-// ================== NUOVO SISTEMA DI STAMPA TERMICA ==================
+// ================== SISTEMA DI STAMPA TERMICA UNIVERSALE ==================
 const PRINTER_CONFIG_PATH = path.join(__dirname, 'stampante-selezionata.json');
+const isWindows = os.platform() === 'win32';
+
+// Costanti ESC/POS per i comandi - INIZIO AGGIUNTA/VERIFICA
+const ESC = '\x1B'; // Escape character (ASCII 27 in esadecimale)
+const GS = '\x1D';  // Group Separator character (ASCII 29 in esadecimale)
+const FS = '\x1C';  // Field Separator character (ASCII 28 in esadecimale)
+// FINE AGGIUNTA/VERIFICA
+const ESC_POS_COMMANDS = {
+    TAGLIA_CARTA: `${GS}V\x00`,     // Taglio completo della carta. \x00 indica taglio completo.
+    TESTO_GRANDE: `${ESC}!\x30`,    // Doppia altezza e doppia larghezza (Font A).
+    TESTO_NORMALE: `${ESC}!\x00`,   // Testo normale (Font A).
+    CENTRA: `${ESC}a\x01`,          // Allineamento al centro.
+    ALLINEA_SINISTRA: `${ESC}a\x00`, // Allineamento a sinistra.
+    ALLINEA_DESTRA: `${ESC}a\x02`,   // Allineamento a destra.
+    // Puoi aggiungere altri comandi qui se necessario in futuro
+};
 
 // Inizializzazione config stampante
 function initPrinterConfig() {
@@ -51,46 +68,131 @@ function setSelectedPrinter(printerName) {
     }), 'utf-8');
 }
 
-// Funzione per ottenere la lista delle stampanti
-function getPrinterList() {
-    return new Promise((resolve, reject) => {
-        exec('lpstat -e', (error, stdout, stderr) => {
-            if (error) return reject(error);
+// Ottieni la stampante predefinita
+function getDefaultPrinter() {
+    try {
+        if (isWindows) {
+            const stdout = execSync('wmic printer get name,default').toString();
+            const match = stdout.match(/True\s+([^\r\n]+)/);
+            return match ? match[1].trim() : null;
+        } else {
+            const stdout = execSync('lpstat -d').toString();
+            const match = stdout.match(/system default destination:\s*(\S+)/);
+            return match ? match[1] : null;
+        }
+    } catch (e) {
+        console.error('Errore rilevamento stampante predefinita:', e);
+        return null;
+    }
+}
 
-            const printers = stdout.split('\n')
+// Funzione per ottenere la lista delle stampanti
+async function getPrinterList() {
+    try {
+        if (isWindows) {
+            const stdout = execSync('wmic printer get name').toString();
+            return stdout.split('\r\r\n')
+                .slice(1)
+                .map(p => p.trim())
+                .filter(p => p);
+        } else {
+            const stdout = execSync('lpstat -e').toString();
+            return stdout.split('\n')
                 .map(line => line.trim())
-                .filter(line => line !== '');
-            console.log(printers)
-            resolve(printers);
-        });
-    });
+                .filter(line => line);
+        }
+    } catch (error) {
+        console.error('Errore lista stampanti:', error);
+        return [];
+    }
 }
 
 // Funzione per stampare con una specifica stampante
-function printWithPrinter(printerName, content) {
-    return new Promise((resolve, reject) => {
-        const printData = Buffer.isBuffer(content) ? content : Buffer.from(content);
+async function printWithPrinter(printerName, content) {
+    const printData = Buffer.isBuffer(content) ? content : Buffer.from(content);
 
-        const tempFile = `print_${Date.now()}.bin`;
-        fs.writeFileSync(tempFile, printData);
+    if (isWindows) {
+        // Usa PowerShell per stampare su Windows
+        const base64 = printData.toString('base64');
+        const psScript = `
+            $printerName = "${printerName}"
+            $bytes = [Convert]::FromBase64String("${base64}")
+            $filePath = [System.IO.Path]::GetTempFileName()
+            [System.IO.File]::WriteAllBytes($filePath, $bytes)
+            Start-Process -FilePath $filePath -Verb PrintTo -ArgumentList $printerName -Wait
+            Start-Sleep -Seconds 2
+            Remove-Item $filePath
+        `;
 
-        exec(`lpr -o raw ${tempFile} -P "${printerName}"`, (error) => {
-            fs.unlinkSync(tempFile);
-            if (error) reject(error);
-            else resolve();
+        return new Promise((resolve, reject) => {
+            exec(`powershell -Command "${psScript}"`, (error) => {
+                if (error) reject(error);
+                else resolve();
+            });
         });
-    });
+    } else {
+        // Usa lpr per macOS/Linux
+        return new Promise((resolve, reject) => {
+            const tempFile = `print_${Date.now()}.bin`;
+            fs.writeFileSync(tempFile, printData);
+
+            exec(`lpr -o raw ${tempFile} -P "${printerName}"`, (error) => {
+                fs.unlinkSync(tempFile);
+                if (error) reject(error);
+                else resolve();
+            });
+        });
+    }
 }
 
 // Funzione per generare comandi ESC/POS
-function generateEscPosContent(text) {
-    return Buffer.concat([
-        Buffer.from('\x1B\x40'), // Inizializza stampante
-        Buffer.from('\x1B\x61\x01'), // Centra testo
-        Buffer.from(text + '\n'),
-        Buffer.from('\n\n\n\n\n'), // Spazio per il taglio
-        Buffer.from('\x1D\x56\x41\x03') // Taglia carta
-    ]);
+function generateEscPosContent(receiptContent) { // ho rinominato 'text' in 'receiptContent' per chiarezza
+    let escPosBytes = [];
+
+    // 1. Inizializza la stampante (resettando le impostazioni) - Buona pratica per iniziare puliti.
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('@'.charCodeAt(0)); // @
+
+    // 2. Imposta la Code Page per il simbolo Euro
+    console.log("Configurazione per simbolo Euro.");
+    // Comando per abilitare il simbolo Euro: 1f 1b 10 12 12 01 (HEX)
+    // Questo è il comando specifico Munbyn ITPP068USE per attivare il simbolo dell'euro.
+    escPosBytes.push(0x1F, 0x1B, 0x10, 0x12, 0x12, 0x01);
+    // Comando per selezionare la Code Page 2 (CP858) - Munbyn spesso la associa all'euro.
+    // Prova con 0x02. Se non funziona, prova con 0x00 (CP437, spesso \xDD) o 0x10 (CP1252, spesso \x80).
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('t'.charCodeAt(0)); // t
+    escPosBytes.push(0x10); // Code Page 2 (HEX: \x02, corrisponde a CP858)
+
+    const lines = receiptContent.split('\n');
+
+    lines.forEach(line => {
+        let processedLine = line;
+
+        // Sostituisci i comandi testuali come [COMANDO:CENTRA] con le sequenze ESC/POS corrette
+        for (const [commandName, escPosSequence] of Object.entries(ESC_POS_COMMANDS)) {
+            const commandPlaceholder = `[COMANDO:${commandName}]`;
+            processedLine = processedLine.split(commandPlaceholder).join(escPosSequence);
+        }
+
+        // Gestione del simbolo Euro (€): Sostituisci il simbolo testuale con il byte corretto
+        // '\xD5' è il byte per l'Euro in Code Page 858.
+        // Se non funziona con 0x02 e \xD5, prova a cambiare 0x02 a 0x00 e \xD5 a \xDD,
+        // o 0x02 a 0x10 e \xD5 a \x80 (ma \xD5 con 0x02 è il più probabile per Munbyn).
+        processedLine = processedLine.replace(/€/g, '\x80');
+
+        // Converti la riga processata in un array di byte ASCII (o della Code Page selezionata)
+        // Questo ciclo itera su ogni carattere della stringa e lo aggiunge come singolo byte.
+        for (let i = 0; i < processedLine.length; i++) {
+            escPosBytes.push(processedLine.charCodeAt(i));
+        }
+
+        // Aggiungi un Line Feed (ritorno a capo) alla fine di ogni riga
+        escPosBytes.push('\x0A'.charCodeAt(0)); // Line Feed (LF)
+    });
+
+    // Ritorna un Buffer di byte. Questo è CRUCIALE per inviare dati raw alla stampante.
+    return Buffer.from(escPosBytes);
 }
 
 // API per la gestione della stampante
@@ -119,9 +221,15 @@ app.post('/stampa', async (req, res) => {
             return res.status(400).json({ error: 'Testo mancante' });
         }
 
-        const printerName = getSelectedPrinter();
+        // Usa stampante selezionata o predefinita
+        let printerName = getSelectedPrinter();
         if (!printerName) {
-            return res.status(400).json({ error: 'Stampante non selezionata' });
+            printerName = getDefaultPrinter();
+            if (printerName) setSelectedPrinter(printerName);
+        }
+
+        if (!printerName) {
+            return res.status(400).json({ error: 'Nessuna stampante disponibile' });
         }
 
         const content = generateEscPosContent(testo);
@@ -153,34 +261,35 @@ app.get('/stampante-selezionata', (req, res) => {
     }
     res.json({ printer: selected });
 });
-// ================== FINE NUOVO SISTEMA DI STAMPA ==================
+
+// ================== FINE SISTEMA DI STAMPA ==================
 
 const dbPath = path.join(__dirname, 'cassa.sqlite3')
 const db = new Database(dbPath)
 db.pragma('journal_mode = WAL');
 
 db.prepare(`CREATE TABLE IF NOT EXISTS prodotti (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    nome TEXT NOT NULL,
-    quantita INTEGER NOT NULL,
-    tipologia TEXT NOT NULL,
-    prezzo REAL NOT NULL
-)`).run()
+                                                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                                    nome TEXT NOT NULL,
+                                                    quantita INTEGER NOT NULL,
+                                                    tipologia TEXT NOT NULL,
+                                                    prezzo REAL NOT NULL
+            )`).run()
 
 db.prepare(`CREATE TABLE IF NOT EXISTS orders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    uuid TEXT,
-    recapOrdine TEXT,
-    totale REAL,
-    timestamp TEXT
-)`).run()
+                                                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                                  uuid TEXT,
+                                                  recapOrdine TEXT,
+                                                  totale REAL,
+                                                  timestamp TEXT
+            )`).run()
 
 db.prepare(`CREATE TABLE IF NOT EXISTS categories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT,
-    color TEXT,
-    enable Boolean DEFAULT 1
-)`).run()
+                                                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                                      name TEXT,
+                                                      color TEXT,
+                                                      enable Boolean DEFAULT 1
+            )`).run()
 
 let orders = []
 let products = []
@@ -315,6 +424,109 @@ io.on('connection', socket => {
     socket.emit('sync-product', products)
 
     // Riceve nuovi ordini dal client e li broadcasta agli altri
+    // --- FUNZIONI PER LA GENERAZIONE DELLO SCONTRINO GRAFICO ---
+// Queste funzioni sono state messe qui per ordine. Non modificano la logica esistente.
+
+    const helpers = {
+        creaRigaColonne: function(colSinistra, colCentro, colDestra, larghezze) {
+            const [larghSinistra, larghCentro, larghDestra] = larghezze;
+            let righe = [];
+            let testoSinistraRimanente = colSinistra;
+            let primoGiro = true;
+
+            while (testoSinistraRimanente.length > 0) {
+                let parteSinistra = testoSinistraRimanente.substring(0, larghSinistra);
+                testoSinistraRimanente = testoSinistraRimanente.substring(larghSinistra);
+                parteSinistra = parteSinistra.padEnd(larghSinistra, ' ');
+
+                if (primoGiro) {
+                    const parteCentro = colCentro.padStart(larghCentro, ' ');
+                    const parteDestra = colDestra.padStart(larghDestra, ' ');
+                    righe.push(parteSinistra + parteCentro + parteDestra);
+                    primoGiro = false;
+                } else {
+                    righe.push(parteSinistra);
+                }
+            }
+            return righe;
+        },
+        creaSeparatore: function(larghezzaTotale) {
+            return ''.padEnd(larghezzaTotale, '-');
+        }
+    };
+
+    function generaScontrinoTermicoAvanzato(datiOrdine, config = { larghezzaCaratteri: 42 }) {
+        const { larghezzaCaratteri } = config;
+        let scontrino = [];
+        // Rimuovi questa riga se presente: const simboloEuro = '\x80';
+
+        const dataOraOrdine = new Date(datiOrdine.dataOra);
+        const addLeadingZero = (num) => num < 10 ? '0' + num : num;
+        const giorno = addLeadingZero(dataOraOrdine.getDate());
+        const mese = addLeadingZero(dataOraOrdine.getMonth() + 1);
+        const anno = dataOraOrdine.getFullYear();
+        const ore = addLeadingZero(dataOraOrdine.getHours());
+        const minuti = addLeadingZero(dataOraOrdine.getMinutes());
+
+        const dataFormattata = `${giorno}/${mese}/${anno} ${ore}:${minuti}`;
+
+        // Qui usi i comandi testuali che verranno interpretati da generateEscPosContent
+        // Ho rimesso i comandi di centratura e dimensione che avevamo definito
+        // Ho commentato il logo per ora, poiché richiede gestione separata e complessa
+        // scontrino.push('[COMANDO:STAMPA_LOGO]'); // Commentato, da gestire a parte se hai un logo binario
+        scontrino.push('');
+        scontrino.push(`[COMANDO:CENTRA][COMANDO:TESTO_GRANDE]${datiOrdine.titoloAzienda}[COMANDO:TESTO_NORMALE]`);
+        scontrino.push('[COMANDO:TESTO_NORMALE]'); // Assicurati che il testo successivo sia normale
+        scontrino.push(`[COMANDO:CENTRA]${datiOrdine.sottotitoloAzienda}`);
+        scontrino.push('');
+        scontrino.push(`Data: ${dataFormattata}`);
+        scontrino.push(`Numero scontrino: ${datiOrdine.numeroScontrino}`);
+        scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
+        const larghezzeColonne = [
+            Math.floor(larghezzaCaratteri * 0.5),
+            Math.floor(larghezzaCaratteri * 0.2),
+            Math.floor(larghezzaCaratteri * 0.3)
+        ];
+
+        const sommaLarghezze = larghezzeColonne[0] + larghezzeColonne[1] + larghezzeColonne[2];
+        if (sommaLarghezze < larghezzaCaratteri) {
+            larghezzeColonne[0] += (larghezzaCaratteri - sommaLarghezze);
+        }
+
+        scontrino.push(...helpers.creaRigaColonne('Prodotto', 'N°', 'TOT', larghezzeColonne));
+        scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
+        datiOrdine.prodotti.forEach(p => {
+            let nomeProdotto = p.nome;
+            if (p.quantita > 1) {
+                const prezzoUnitarioFormat = Number(p.prezzoUnitario).toFixed(2);
+                // Inseriamo il simbolo € qui come carattere normale
+                nomeProdotto += ` (€${prezzoUnitarioFormat} cad.)`;
+            }
+            const qta = p.quantita.toString();
+            // Inseriamo il simbolo € qui come carattere normale
+            const totaleRiga = `€` + Number(p.totale).toFixed(2);
+            scontrino.push(...helpers.creaRigaColonne(nomeProdotto, qta, totaleRiga, larghezzeColonne));
+        });
+        scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
+        // Inseriamo il simbolo € qui come carattere normale
+        const testoTotale = `Totale: €` + Number(datiOrdine.totaleOrdine).toFixed(2);
+        // Aggiunto [COMANDO:TESTO_NORMALE] per riportare il testo alla dimensione standard dopo il totale grande.
+        scontrino.push(`[COMANDO:ALLINEA_DESTRA][COMANDO:TESTO_GRANDE]${testoTotale}[COMANDO:TESTO_NORMALE]`);
+        scontrino.push('');
+        scontrino.push('[COMANDO:CENTRA]Grazie per il tuo acquisto!');
+        scontrino.push('');
+        scontrino.push('');
+        scontrino.push('');
+        scontrino.push('');
+        scontrino.push('');
+        scontrino.push('');
+        // Riattivato il comando [COMANDO:TAGLIA_CARTA] che ora verrà interpretato correttamente
+        scontrino.push('[COMANDO:TAGLIA_CARTA]');
+        return scontrino.join('\n');
+    }
+
+// --- TUA FUNZIONE SOCKET.IO CON LA LOGICA DI STAMPA INTEGRATA ---
+
     socket.on('new-order', (order, cb) => {
         console.log('Nuovo ordine ricevuto:', order);
 
@@ -353,29 +565,57 @@ io.on('connection', socket => {
         if (cb) cb(nuovoOrder);
 
         // 5. Stampa termica automatica
-        const printerName = getSelectedPrinter();
-        if (printerName) {
-            try {
-                let receiptContent = `ORDINE #${order.uuid}\n`;
-                receiptContent += `Data: ${order.timestamp}\n\n`;
+        try {
+            let printerName = getSelectedPrinter();
+            if (!printerName) {
+                printerName = getDefaultPrinter();
+                if (printerName) setSelectedPrinter(printerName);
+            }
 
+            if (printerName) {
+                // --- INIZIO BLOCCO STAMPA AVANZATA ---
+
+                // Impostazioni (modifica qui i tuoi dati)
+                const NOME_AZIENDA = 'La Tua Attività';
+                const SOTTOTITOLO_AZIENDA = 'Indirizzo e contatti';
+                const CONFIG_STAMPANTE = { larghezzaCaratteri: 42 }; // 42 per rotoli 58mm, 56 per 80mm
+
+                // 1. Prepara i dati per la funzione avanzata
+                const prodottiPerScontrino = [];
                 Object.entries(counts).forEach(([id, count]) => {
                     const p = db.prepare('SELECT nome, prezzo FROM prodotti WHERE id = ?').get(id);
                     if (p) {
-                        receiptContent += `${count}x ${p.nome} @${p.prezzo.toFixed(2)}€\n`;
+                        prodottiPerScontrino.push({
+                            nome: p.nome,
+                            quantita: count,
+                            prezzoUnitario: p.prezzo,
+                            totale: count * p.prezzo // Calcoliamo il totale di riga
+                        });
                     }
                 });
 
-                receiptContent += `\nTOTALE: ${order.totale}€\n`;
-                receiptContent += 'Grazie e arrivederci!';
+                const datiScontrino = {
+                    numeroScontrino: info.lastInsertRowid,
+                    dataOra: order.timestamp,
+                    titoloAzienda: NOME_AZIENDA,
+                    sottotitoloAzienda: SOTTOTITOLO_AZIENDA,
+                    prodotti: prodottiPerScontrino,
+                    totaleOrdine: order.totale
+                };
 
-                const content = generateEscPosContent(receiptContent);
+                // 2. Genera il contenuto dello scontrino
+                const receiptContent = generaScontrinoTermicoAvanzato(datiScontrino, CONFIG_STAMPANTE);
+
+                // 3. Invia alla stampante (il tuo meccanismo non cambia)
+                const content = generateEscPosContent(receiptContent); // Questa funzione dovrà interpretare i [COMANDO:...]
                 printWithPrinter(printerName, content)
-                    .then(() => console.log('Stampa termica completata'))
+                    .then(() => console.log('Stampa termica completata con layout avanzato.'))
                     .catch(err => console.error('Errore stampa termica:', err));
-            } catch (e) {
-                console.error('Errore generazione scontrino termico:', e);
+
+                // --- FINE BLOCCO STAMPA AVANZATA ---
             }
+        } catch (e) {
+            console.error('Errore generazione scontrino termico:', e);
         }
 
         // 6. Genera PDF (opzionale)
@@ -426,6 +666,148 @@ io.on('connection', socket => {
         }
     });
 
+    socket.on('remove-single-product-in-order', (id, cb) => {
+        try {
+            const order = getOrderById(id);
+            if (!order) {
+                console.log('Ordine non trovato:', id);
+                if (cb) cb({ success: false, error: 'Ordine non trovato' });
+                return;
+            }
+            const recap = order.recapOrdine;
+            const entries = recap.split(',').map(p => p.trim()).filter(p => p);
+            const prodottiMap = {};
+
+            entries.forEach(entry => {
+                const [productIdStr] = entry.split(':');
+                const productId = parseInt(productIdStr);
+                if (!isNaN(productId)) {
+                    if (!prodottiMap[productId]) {
+                        const prodotto = db.prepare('SELECT nome FROM prodotti WHERE id = ?').get(productId);
+                        if (prodotto) {
+                            prodottiMap[productId] = { id: productId, nome: prodotto.nome, quantita: 1 };
+                        }
+                    } else {
+                        prodottiMap[productId].quantita += 1;
+                    }
+                }
+            });
+
+            const prodotti = Object.values(prodottiMap);
+            if (cb) cb({ prodotti, orderId: id });
+        } catch (e) {
+            console.error('Errore durante remove-single-product-in-order:', e);
+            if (cb) cb({ success: false, error: e.message });
+        }
+    });
+
+    socket.on('updateOrder', (id, newOrder, cb) => {
+        try {
+            const order = getOrderById(id);
+            if (!order) {
+                if (cb) cb({ success: false, error: 'Ordine non trovato' });
+                return;
+            }
+
+            let recap = order.recapOrdine;
+            let entries = recap.split(',').map(p => p.trim()).filter(p => p);
+            const newQuantities = {};
+            if (Array.isArray(newOrder)) {
+                newOrder.forEach(p => {
+                    newQuantities[p.id] = p.quantita;
+                });
+            }
+
+            const currentCounts = {};
+            entries.forEach(entry => {
+                const [productIdStr] = entry.split(':');
+                const productId = parseInt(productIdStr);
+                if (!isNaN(productId)) {
+                    currentCounts[productId] = (currentCounts[productId] || 0) + 1;
+                }
+            });
+
+            // ✅ PRIMA: Controlla disponibilità prodotti per eventuali incrementi
+            const insufficientProducts = [];
+            Object.entries(newQuantities).forEach(([productIdStr, newQ]) => {
+                const productId = parseInt(productIdStr);
+                const oldQ = currentCounts[productId] || 0;
+                const diff = newQ - oldQ;
+                if (diff > 0) {
+                    const prodotto = db.prepare('SELECT quantita FROM prodotti WHERE id = ?').get(productId);
+                    if (!prodotto || prodotto.quantita < diff) {
+                        insufficientProducts.push({ id: productId, richiesti: diff, disponibili: prodotto ? prodotto.quantita : 0 });
+                    }
+                }
+            });
+
+            if (insufficientProducts.length > 0) {
+                if (cb) cb({
+                    success: false,
+                    error: 'Quantità insufficienti per alcuni prodotti',
+                    dettagli: insufficientProducts
+                });
+                return;
+            }
+
+            // Calcola totale originale
+            let totaleOriginale = 0;
+            Object.entries(currentCounts).forEach(([productIdStr, oldQ]) => {
+                const productId = parseInt(productIdStr);
+                const prodotto = db.prepare('SELECT prezzo FROM prodotti WHERE id = ?').get(productId);
+                const prezzo = prodotto ? prodotto.prezzo : 0;
+                totaleOriginale += oldQ * prezzo;
+            });
+
+            // Aggiorna le quantità dei prodotti
+            let newRecapEntries = [];
+            Object.keys(newQuantities).forEach(productIdStr => {
+                const productId = parseInt(productIdStr);
+                const oldQ = currentCounts[productId] || 0;
+                const newQ = newQuantities[productId] || 0;
+                const diff = newQ - oldQ;
+                if (diff !== 0) {
+                    db.prepare('UPDATE prodotti SET quantita = quantita - ? WHERE id = ?').run(diff, productId);
+                }
+
+                if (newQ && newQ > 0) {
+                    const priceEntry = entries.find(e => parseInt(e.split(':')[0]) === productId);
+                    const entryToUse = priceEntry || `${productId}:0`;
+                    for (let i = 0; i < newQ; i++) {
+                        newRecapEntries.push(entryToUse);
+                    }
+                }
+            });
+
+            // Calcola nuovo totale
+            let totaleNuovo = 0;
+            Object.entries(newQuantities).forEach(([productIdStr, newQ]) => {
+                const productId = parseInt(productIdStr);
+                const prodotto = db.prepare('SELECT prezzo FROM prodotti WHERE id = ?').get(productId);
+                const prezzo = prodotto ? prodotto.prezzo : 0;
+                totaleNuovo += newQ * prezzo;
+            });
+
+            // Aggiorna ordine
+            db.prepare('UPDATE orders SET totale = ? WHERE id = ?').run(totaleNuovo, id);
+            const newRecap = newRecapEntries.join(',');
+            db.prepare('UPDATE orders SET recapOrdine = ? WHERE id = ?').run(newRecap, id);
+
+            const prodottiAggiornati = db.prepare('SELECT * FROM prodotti').all();
+            io.emit('product-list', prodottiAggiornati.map(p => {
+                const cat = db.prepare('SELECT name, color FROM categories WHERE id = ?').get(p.tipologia);
+                return { ...p, tipologia: cat ? cat.name : p.tipologia, colore: cat ? cat.color : null };
+            }));
+
+            if (cb) cb({ success: true, recap: newRecap, order, totaleOriginale, totaleNuovo, differenza: totaleNuovo - totaleOriginale });
+            return { order, id };
+        } catch (e) {
+            if (cb) cb({ success: false, error: e.message });
+        }
+    });
+
+
+
     socket.on('product', product => {
         products.push(product)
         console.log('Nuovo prodotto ricevuto:', product)
@@ -456,10 +838,12 @@ server.listen(3000, () => {
     console.log('Server Socket.IO in ascolto su http://localhost:3000')
 })
 
+function getOrderById(id) {
+    return db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
+}
 app.get('/get-socket-ip', (req, res) => {
-    const os = require('os');
-    let ip = null;
     const interfaces = os.networkInterfaces();
+    let ip = null;
     for (const name of Object.keys(interfaces)) {
         for (const iface of interfaces[name]) {
             if (iface.family === 'IPv4' && !iface.internal) {
@@ -468,4 +852,68 @@ app.get('/get-socket-ip', (req, res) => {
         }
     }
     res.json({ ip });
+});
+app.get('/get-socket-ip', (req, res) => {
+    const interfaces = os.networkInterfaces();
+    let ip = null;
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                ip = iface.address;
+            }
+        }
+    }
+    res.json({ ip });
+});
+function parseRecapOrdine(recapOrdine, db) {
+    const items = recapOrdine
+        .split(',')
+        .map(p => p.trim())
+        .filter(Boolean);
+
+    const totals = {}; // { id: { totale: 0, quantità: 0 } }
+
+    for (const item of items) {
+        const [id, price] = item.split(':');
+        const parsedId = id.trim();
+        const parsedPrice = parseFloat(price.trim());
+
+        if (!totals[parsedId]) {
+            totals[parsedId] = { totale: 0, quantità: 0 };
+        }
+
+        totals[parsedId].totale += parsedPrice;
+        totals[parsedId].quantità += 1;
+    }
+
+    // Aggiunge il nome del prodotto da DB
+    const result = {};
+
+    for (const id in totals) {
+        const prodotto = db.prepare('SELECT nome FROM prodotti WHERE id = ?').get(id);
+        result[id] = {
+            nome: prodotto ? prodotto.nome : 'Prodotto sconosciuto',
+            totalePrezzo: totals[id].totale,
+            totaleSingoloProdotto: totals[id].totale/ totals[id].quantità,
+            quantità: totals[id].quantità
+        };
+    }
+
+    return result;
+}
+app.get('/fecthEconomicsData', (req, res) => {
+    try {
+        const lastOrder = db.prepare('SELECT * FROM orders ORDER BY timestamp DESC LIMIT 1').get();
+
+        if (!lastOrder || !lastOrder.recapOrdine) {
+            return res.status(404).json({ error: 'no data available' });
+        }
+
+        const riepilogo = parseRecapOrdine(lastOrder.recapOrdine, db);
+
+        res.json({ riepilogo });
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });

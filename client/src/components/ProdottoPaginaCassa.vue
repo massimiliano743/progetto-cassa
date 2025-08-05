@@ -21,7 +21,8 @@ function addToScontrino(prodotto) {
     <div class="prodotto-pagina-cassa "
          :id="idProdotto"
          :style="{ backgroundColor: colore }"
-         @click="addToScontrino({ nome: prodottoNome, prezzo, quantita, idProdotto })">
+         :class="{ disabilitato: quantita <= 0 }"
+         @click="quantita > 0 && addToScontrino({ nome: prodottoNome, prezzo, quantita, idProdotto })">
         <div class="nome-prodotto">
             {{ prodottoNome }}
         </div>
@@ -62,7 +63,10 @@ function addToScontrino(prodotto) {
 
         }
     }
-
+}
+.disabilitato {
+    opacity: 0.5;
+    pointer-events: none;
 }
 
 </style>
