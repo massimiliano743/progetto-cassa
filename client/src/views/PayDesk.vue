@@ -118,6 +118,7 @@ async function inviaOrdine() {
 
 function annullaOrdine() {
     showDeleteOrder.value = true;
+    orderStore.removeOrderTotally();
     console.log('Ordine annullato');
 }
 

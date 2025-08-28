@@ -262,34 +262,86 @@ app.get('/stampante-selezionata', (req, res) => {
     res.json({ printer: selected });
 });
 
+app.get('/set-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    currentDbName = dbName;
+    db = openDb(currentDbName);
+    res.json({ success: true });
+});
+
+app.get('/create-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    try {
+        openDb(dbName); // crea se non esiste
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ================== FINE SISTEMA DI STAMPA ==================
 
-const dbPath = path.join(__dirname, 'cassa.sqlite3')
-const db = new Database(dbPath)
-db.pragma('journal_mode = WAL');
+let currentDbName = null;
+let db = null;
+const dbFolder = path.join(__dirname, 'dbs');
 
-db.prepare(`CREATE TABLE IF NOT EXISTS prodotti (
-                                                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                    nome TEXT NOT NULL,
-                                                    quantita INTEGER NOT NULL,
-                                                    tipologia TEXT NOT NULL,
-                                                    prezzo REAL NOT NULL
-            )`).run()
+// Middleware per leggere il dbName dalla sessione client (header o query)
+app.use((req, res, next) => {
+    // Prova a leggere da header personalizzato
+    const dbNameFromHeader = req.headers['x-db-name'];
+    if (dbNameFromHeader && dbNameFromHeader !== currentDbName) {
+        currentDbName = dbNameFromHeader;
+        db = openDb(currentDbName);
+    }
+    next();
+});
 
-db.prepare(`CREATE TABLE IF NOT EXISTS orders (
-                                                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                  uuid TEXT,
-                                                  recapOrdine TEXT,
-                                                  totale REAL,
-                                                  timestamp TEXT
-            )`).run()
+function getDbPath(dbName) {
+    return path.join(dbFolder, dbName + '.sqlite3');
+}
 
-db.prepare(`CREATE TABLE IF NOT EXISTS categories (
-                                                      id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                                      name TEXT,
-                                                      color TEXT,
-                                                      enable Boolean DEFAULT 1
-            )`).run()
+function openDb(dbName) {
+    const dbPath = getDbPath(dbName);
+    if (!fs.existsSync(dbPath)) {
+        // Se non esiste, crea il file e le tabelle
+        const newDb = new Database(dbPath);
+        newDb.pragma('journal_mode = WAL');
+        newDb.prepare(`CREATE TABLE IF NOT EXISTS prodotti
+            (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome TEXT NOT NULL,
+                quantita INTEGER NOT NULL,
+                tipologia TEXT NOT NULL,
+                prezzo REAL NOT NULL
+            )`).run();
+        newDb.prepare(`CREATE TABLE IF NOT EXISTS orders
+            (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT,
+                recapOrdine TEXT,
+                totale REAL,
+                timestamp TEXT
+            )`).run();
+        newDb.prepare(`CREATE TABLE IF NOT EXISTS categories
+            (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                color TEXT,
+                enable Boolean DEFAULT 1
+            )`).run();
+        return newDb;
+    } else {
+        const existingDb = new Database(dbPath);
+        existingDb.pragma('journal_mode = WAL');
+        return existingDb;
+    }
+}
+
+db = openDb(currentDbName);
+
+
 
 let orders = []
 let products = []
@@ -901,19 +953,112 @@ function parseRecapOrdine(recapOrdine, db) {
 
     return result;
 }
-app.get('/fecthEconomicsData', (req, res) => {
+app.get('/ultimoScontrino', (req, res) => {
     try {
         const lastOrder = db.prepare('SELECT * FROM orders ORDER BY timestamp DESC LIMIT 1').get();
-
+        const totale = lastOrder ? lastOrder.totale : 0;
         if (!lastOrder || !lastOrder.recapOrdine) {
             return res.status(404).json({ error: 'no data available' });
         }
 
         const riepilogo = parseRecapOrdine(lastOrder.recapOrdine, db);
 
-        res.json({ riepilogo });
+        res.json({ riepilogo, totale });
 
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
+app.get('/recapScontrini', (req, res) => {
+    try {
+        const allOrders = db.prepare('SELECT * FROM orders ORDER BY timestamp DESC').all();
+
+        if (!allOrders || allOrders.length === 0) {
+            return res.status(404).json({ error: 'no data available' });
+        }
+
+        const elaboratedOrders = allOrders.map(order => {
+            return {
+                id: order.id,
+                timestamp: order.timestamp,
+                totale: order.totale,
+                dettagli: order.recapOrdine ? parseRecapOrdine(order.recapOrdine, db) : {}
+            };
+        });
+
+        res.json({ orders: elaboratedOrders });
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+app.get('/analisi-prodotti', (req, res) => {
+    try {
+        const orders = db.prepare('SELECT recapOrdine FROM orders').all();
+        const prodottiMap = {}; // { idProdotto: { pezziVenduti, totalePrezzo } }
+        let totaleDef = 0;
+
+        for (const order of orders) {
+            const recap = order.recapOrdine;
+            if (!recap) continue;
+
+            const items = recap.split(',').map(i => i.trim()).filter(Boolean);
+
+            for (const item of items) {
+                const [id, prezzo] = item.split(':');
+                const idProdotto = id.trim();
+                const prezzoFloat = parseFloat(prezzo);
+
+                if (!prodottiMap[idProdotto]) {
+                    prodottiMap[idProdotto] = {
+                        pezziVenduti: 0,
+                        totaleProdotto: 0,
+                    };
+                }
+
+                prodottiMap[idProdotto].pezziVenduti += 1;
+                prodottiMap[idProdotto].totaleProdotto += prezzoFloat;
+                totaleDef += prezzoFloat;
+            }
+        }
+
+        // Recupera i nomi dalla tabella prodotti
+        const result = [];
+        const stmt = db.prepare('SELECT nome FROM prodotti WHERE id = ?');
+
+        for (const id in prodottiMap) {
+            const prodotto = prodottiMap[id];
+            const nomeProdotto = stmt.get(id)?.nome || `Prodotto #${id}`;
+
+            result.push({
+                prodotto: nomeProdotto,
+                pezziVenduti: prodotto.pezziVenduti,
+                totaleProdotto: parseFloat(prodotto.totaleProdotto.toFixed(2)),
+            });
+        }
+
+        res.json({
+            vendite: result,
+            TotaleDef: parseFloat(totaleDef.toFixed(2))
+        });
+
+    } catch (error) {
+        console.error('Errore nella generazione analisi vendite:', error);
+        res.status(500).json({ error: 'Errore nel calcolo vendite' });
+    }
+});
+app.get("/get-db-from-folder", (req, res) => {
+    try {
+        const dbs = fs
+            .readdirSync(dbFolder)
+            .filter(file => file.endsWith(".sqlite3") || file.endsWith(".sqlite"))
+            .map(file => file.replace(/\.(sqlite3|sqlite)$/, "")); // opzionale: rimuove estensione
+
+        res.json({ databases: dbs });
+    } catch (err) {
+        console.error("Errore nel recupero dei database:", err);
+        res.status(500).json({ error: "Impossibile leggere la cartella dei database" });
+    }
+});
+
+

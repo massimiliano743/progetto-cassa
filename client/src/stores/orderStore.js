@@ -43,7 +43,7 @@ export const useOrderStore = defineStore('orderStore', {
         },
         async removeOrder(uuid) {
             const socket = getSocketSync() || await createSocket();
-            socket.emit('remove-single-product-in-order', uuid, (res) => {
+            socket.emit('remove-order', uuid, (res) => {
                 if (!res || res.success === false) {
                     const errorMsg = res?.error || 'Errore sconosciuto nella rimozione ordine';
                     alert(`⚠️ Errore: ${errorMsg}`);

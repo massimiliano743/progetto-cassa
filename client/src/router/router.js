@@ -5,9 +5,11 @@ import SettingProduct from "@/views/SettingProduct.vue";
 import SettingCategorie from "@/views/SettingCategorie.vue";
 import SettingEconomics from "@/views/SettingEconomics.vue";
 import PayDesk from "@/views/PayDesk.vue";
+import SelectDb from "@/views/SelectDb.vue";
 
 const routes = [
     {path: '/', name: 'Home', component: HomePage},
+    {path: '/db', name: 'SelectDb', component: SelectDb},
     {path: '/main/', name: 'MainPage', component: MainPage},
     {path: '/setting-product/', name: 'SettingProduct', component: SettingProduct},
     {path: '/setting-categorie/', name: 'SettingCategorie', component: SettingCategorie},
