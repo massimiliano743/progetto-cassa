@@ -31,8 +31,13 @@ function confirmLogout() {
       <div>
           <!-- Bottone logout (div cliccabile) -->
           <div
+              style="position:fixed;top:0;right:210px;z-index:1000;background:#eee;padding:2px 16px;border-radius:0 0 0 8px;min-width:120px;text-align:right;"
+          >
+              Evento: <b>{{ deviceStore.dbName }}</b>
+          </div>
+          <div
               @click="showLogoutModal = true"
-              style="cursor:pointer;position:fixed;top:0;right:0;z-index:1000;background:#eee;padding:8px 16px;border-radius:0 0 0 8px;min-width:120px;text-align:right;"
+              style="cursor:pointer;position:fixed;top:0;right:0;z-index:1000;background:#eee;padding:2px 16px;border-radius:0 0 0 8px;min-width:120px;text-align:right;"
           >
               Stato dispositivo: <b>{{ deviceStore.isServer ? 'Master' : 'Client' }}</b>
           </div>

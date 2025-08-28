@@ -33,7 +33,7 @@ async function handleLogin() {
                         }
                     });
                     // Redirect
-                    router.push({ name: 'MainPage' });
+                    router.push({ name: 'SelectDb' });
                 });
             } else {
                 authError.value = response.message || 'Credenziali non valide';
