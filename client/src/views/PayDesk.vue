@@ -376,7 +376,7 @@ async function confermaSelezioneProdotti(){
         background-color: #f0f0f0;
         display: flex;
         flex-direction: column;
-        padding: 30px;
+        padding: 0 30px 30px 30px;
         overflow-y: auto;
         box-sizing: border-box;
     }

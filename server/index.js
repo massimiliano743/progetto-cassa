@@ -33,12 +33,22 @@ const GS = '\x1D';  // Group Separator character (ASCII 29 in esadecimale)
 const FS = '\x1C';  // Field Separator character (ASCII 28 in esadecimale)
 // FINE AGGIUNTA/VERIFICA
 const ESC_POS_COMMANDS = {
-    TAGLIA_CARTA: `${GS}V\x00`,     // Taglio completo della carta. \x00 indica taglio completo.
-    TESTO_GRANDE: `${ESC}!\x30`,    // Doppia altezza e doppia larghezza (Font A).
-    TESTO_NORMALE: `${ESC}!\x00`,   // Testo normale (Font A).
-    CENTRA: `${ESC}a\x01`,          // Allineamento al centro.
-    ALLINEA_SINISTRA: `${ESC}a\x00`, // Allineamento a sinistra.
-    ALLINEA_DESTRA: `${ESC}a\x02`,   // Allineamento a destra.
+    TAGLIA_CARTA:      `${GS}V\x00`,     // Taglio completo della carta. \x00 indica taglio completo.
+    TESTO_GRANDE:      `${ESC}!\x30`,    // Doppia altezza e larghezza (Font A).
+    TESTO_NORMALE:     `${ESC}!\x00`,    // Testo normale (Font A).
+    TESTO_MEDIO:       `${ESC}!\x10`,    // Altezza doppia, larghezza normale (Font A).
+    TESTO_LARGO:       `${ESC}!\x20`,    // Larghezza doppia, altezza normale (Font A).
+    FONT_B:            `${ESC}M\x01`,    // Font B (più piccolo).
+    FONT_A:            `${ESC}M\x00`,    // Font A (standard).
+    SOTTOLINEATO:      `${ESC}-\x01`,    // Sottolineato ON.
+    SOTTOLINEATO_OFF:  `${ESC}-\x00`,    // Sottolineato OFF.
+    INVERTI:           `${ESC}B\x01`,    // Inverti bianco/nero ON.
+    INVERTI_OFF:       `${ESC}B\x00`,    // Inverti bianco/nero OFF.
+    CENTRA:            `${ESC}a\x01`,    // Allineamento al centro.
+    ALLINEA_SINISTRA:  `${ESC}a\x00`,    // Allineamento a sinistra.
+    ALLINEA_DESTRA:    `${ESC}a\x02`,    // Allineamento a destra.
+    GRASSETTO:         `${ESC}E\x01`,    // Grassetto ON.
+    GRASSETTO_OFF:     `${ESC}E\x00`,    // Grassetto OFF.
     // Puoi aggiungere altri comandi qui se necessario in futuro
 };
 
@@ -529,10 +539,10 @@ io.on('connection', socket => {
         scontrino.push('');
         scontrino.push(`[COMANDO:CENTRA][COMANDO:TESTO_GRANDE]${datiOrdine.titoloAzienda}[COMANDO:TESTO_NORMALE]`);
         scontrino.push('[COMANDO:TESTO_NORMALE]'); // Assicurati che il testo successivo sia normale
-        scontrino.push(`[COMANDO:CENTRA]${datiOrdine.sottotitoloAzienda}`);
+        scontrino.push(`[COMANDO:CENTRA][COMANDO:TESTO_GRANDE][COMANDO:FONT_A][COMANDO:SOTTOLINEATO]${datiOrdine.sottotitoloAzienda}[COMANDO:SOTTOLINEATO_OFF][COMANDO:TESTO_NORMALE]`);
         scontrino.push('');
         scontrino.push(`Data: ${dataFormattata}`);
-        scontrino.push(`Numero scontrino: ${datiOrdine.numeroScontrino}`);
+        scontrino.push(`Numero scontrino: [COMANDO:TESTO_GRANDE]${datiOrdine.numeroScontrino}[COMANDO:TESTO_NORMALE]`);
         scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
         const larghezzeColonne = [
             Math.floor(larghezzaCaratteri * 0.5),
@@ -628,24 +638,58 @@ io.on('connection', socket => {
                 // --- INIZIO BLOCCO STAMPA AVANZATA ---
 
                 // Impostazioni (modifica qui i tuoi dati)
-                const NOME_AZIENDA = 'La Tua Attività';
-                const SOTTOTITOLO_AZIENDA = 'Indirizzo e contatti';
+                const NOME_AZIENDA = currentDbName;
+                const SOTTOTITOLO_AZIENDA = '';
                 const CONFIG_STAMPANTE = { larghezzaCaratteri: 42 }; // 42 per rotoli 58mm, 56 per 80mm
 
                 // 1. Prepara i dati per la funzione avanzata
                 const prodottiPerScontrino = [];
+                const prodottiPerCategoria = {};
                 Object.entries(counts).forEach(([id, count]) => {
-                    const p = db.prepare('SELECT nome, prezzo FROM prodotti WHERE id = ?').get(id);
+                    const p = db.prepare('SELECT nome, prezzo, tipologia FROM prodotti WHERE id = ?').get(id);
                     if (p) {
                         prodottiPerScontrino.push({
                             nome: p.nome,
                             quantita: count,
                             prezzoUnitario: p.prezzo,
-                            totale: count * p.prezzo // Calcoliamo il totale di riga
+                            totale: count * p.prezzo,
+                            tipologia: p.tipologia
+                        });
+                        // Raggruppa per categoria
+                        if (!prodottiPerCategoria[p.tipologia]) prodottiPerCategoria[p.tipologia] = [];
+                        prodottiPerCategoria[p.tipologia].push({
+                            nome: p.nome,
+                            quantita: count,
+                            prezzoUnitario: p.prezzo,
+                            totale: count * p.prezzo
                         });
                     }
                 });
 
+                // Recupera i nomi delle categorie
+                const categorieNomi = {};
+                Object.keys(prodottiPerCategoria).forEach(catId => {
+                    const cat = db.prepare('SELECT name FROM categories WHERE id = ?').get(catId);
+                    categorieNomi[catId] = cat ? cat.name : `Categoria #${catId}`;
+                });
+
+                // --- Stampa scontrini per categoria + totale in un unico job ---
+                let bufferUnico = Buffer.alloc(0);
+                // Scontrini per categoria
+                Object.entries(prodottiPerCategoria).forEach(([catId, prodottiCat]) => {
+                    const datiScontrinoCat = {
+                        numeroScontrino: info.lastInsertRowid,
+                        dataOra: order.timestamp,
+                        titoloAzienda: NOME_AZIENDA,
+                        sottotitoloAzienda: categorieNomi[catId],
+                        prodotti: prodottiCat,
+                        totaleOrdine: prodottiCat.reduce((acc, p) => acc + p.totale, 0)
+                    };
+                    const receiptContentCat = generaScontrinoTermicoAvanzato(datiScontrinoCat, CONFIG_STAMPANTE);
+                    const contentCat = generateEscPosContent(receiptContentCat);
+                    bufferUnico = Buffer.concat([bufferUnico, contentCat]);
+                });
+                // Scontrino totale
                 const datiScontrino = {
                     numeroScontrino: info.lastInsertRowid,
                     dataOra: order.timestamp,
@@ -654,16 +698,13 @@ io.on('connection', socket => {
                     prodotti: prodottiPerScontrino,
                     totaleOrdine: order.totale
                 };
-
-                // 2. Genera il contenuto dello scontrino
                 const receiptContent = generaScontrinoTermicoAvanzato(datiScontrino, CONFIG_STAMPANTE);
-
-                // 3. Invia alla stampante (il tuo meccanismo non cambia)
-                const content = generateEscPosContent(receiptContent); // Questa funzione dovrà interpretare i [COMANDO:...]
-                printWithPrinter(printerName, content)
-                    .then(() => console.log('Stampa termica completata con layout avanzato.'))
+                const content = generateEscPosContent(receiptContent);
+                bufferUnico = Buffer.concat([bufferUnico, content]);
+                // Stampa tutto insieme
+                printWithPrinter(printerName, bufferUnico)
+                    .then(() => console.log('Stampa termica completata con layout avanzato (job unico).'))
                     .catch(err => console.error('Errore stampa termica:', err));
-
                 // --- FINE BLOCCO STAMPA AVANZATA ---
             }
         } catch (e) {
@@ -1060,5 +1101,3 @@ app.get("/get-db-from-folder", (req, res) => {
         res.status(500).json({ error: "Impossibile leggere la cartella dei database" });
     }
 });
-
-

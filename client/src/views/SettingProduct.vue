@@ -416,7 +416,7 @@ function updatePrinterStatus(message, color) {
 
 <style scoped>
 .printer-section {
-    margin: 1rem 0;
+    margin: 0 0;
     padding: 1rem;
     background: #f8f8f8;
     border-radius: 8px;
