@@ -11,6 +11,7 @@ const PDFDocument = require('pdfkit');
 const puppeteer = require('puppeteer');
 const { exec, execSync } = require('child_process');
 const os = require('os');
+const sharp = require('sharp');
 
 const app = express()
 app.use(cors())
@@ -203,6 +204,52 @@ function generateEscPosContent(receiptContent) { // ho rinominato 'text' in 'rec
 
     // Ritorna un Buffer di byte. Questo è CRUCIALE per inviare dati raw alla stampante.
     return Buffer.from(escPosBytes);
+}
+
+async function getLogoEscPosBuffer(logoPath) {
+    try {
+        // Converte il logo in PNG monocromatico, larghezza max 384px (compatibile con la maggior parte delle termiche)
+        const image = await sharp(logoPath)
+            .resize({ width: 384 })
+            .threshold(128)
+            .png()
+            .toBuffer();
+        // Leggi i byte PNG
+        const PNG = require('pngjs').PNG;
+        const png = PNG.sync.read(image);
+        const width = png.width;
+        const height = png.height;
+        const bytesPerLine = Math.ceil(width / 8);
+        let escpos = Buffer.alloc(0);
+        for (let y = 0; y < height; y++) {
+            let line = Buffer.alloc(bytesPerLine);
+            for (let x = 0; x < width; x++) {
+                const idx = (width * y + x) << 2;
+                // Conversione RGB -> bianco/nero
+                const r = png.data[idx];
+                const g = png.data[idx + 1];
+                const b = png.data[idx + 2];
+                // Calcolo luminosità media
+                const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+                if (lum < 128) {
+                    line[Math.floor(x / 8)] |= (0x80 >> (x % 8));
+                }
+            }
+            escpos = Buffer.concat([escpos, line]);
+        }
+        // Comando ESC/POS GS v 0
+        const header = Buffer.from([
+            0x1D, 0x76, 0x30, 0x00,
+            bytesPerLine & 0xFF,
+            (bytesPerLine >> 8) & 0xFF,
+            height & 0xFF,
+            (height >> 8) & 0xFF
+        ]);
+        return Buffer.concat([header, escpos]);
+    } catch (e) {
+        console.error('Errore generazione buffer logo ESC/POS:', e);
+        return Buffer.alloc(0);
+    }
 }
 
 // API per la gestione della stampante
@@ -589,7 +636,7 @@ io.on('connection', socket => {
 
 // --- TUA FUNZIONE SOCKET.IO CON LA LOGICA DI STAMPA INTEGRATA ---
 
-    socket.on('new-order', (order, cb) => {
+    socket.on('new-order', async (order, cb) => {
         console.log('Nuovo ordine ricevuto:', order);
 
         // 1. Conta le occorrenze di ogni id prodotto
@@ -625,6 +672,63 @@ io.on('connection', socket => {
         orders.push(order);
         socket.broadcast.emit('order-added', order);
         if (cb) cb(nuovoOrder);
+
+        // Aggiorna riepiloghi dopo aggiunta ordine
+        try {
+            // Ultimo scontrino
+            const lastOrder = db.prepare('SELECT * FROM orders ORDER BY timestamp DESC LIMIT 1').get();
+            const totale = lastOrder ? lastOrder.totale : 0;
+            const riepilogo = lastOrder && lastOrder.recapOrdine ? parseRecapOrdine(lastOrder.recapOrdine, db) : {};
+            io.emit('ultimoScontrino', { riepilogo, totale });
+
+            // Tutti gli ordini
+            const allOrders = db.prepare('SELECT * FROM orders ORDER BY timestamp DESC').all();
+            const elaboratedOrders = allOrders.map(order => ({
+                id: order.id,
+                timestamp: order.timestamp,
+                totale: order.totale,
+                dettagli: order.recapOrdine ? parseRecapOrdine(order.recapOrdine, db) : {}
+            }));
+            io.emit('recapScontrini', { orders: elaboratedOrders });
+
+            // Analisi prodotti (periodo completo)
+            const ordersForAnalysis = db.prepare('SELECT recapOrdine, timestamp FROM orders').all();
+            const prodottiMap = {};
+            let totaleDef = 0;
+            for (const order of ordersForAnalysis) {
+                const recap = order.recapOrdine;
+                if (!recap) continue;
+                const items = recap.split(',').map(i => i.trim()).filter(Boolean);
+                for (const item of items) {
+                    const [id, prezzo] = item.split(':');
+                    const idProdotto = id.trim();
+                    const prezzoFloat = parseFloat(prezzo);
+                    if (!prodottiMap[idProdotto]) {
+                        prodottiMap[idProdotto] = {
+                            pezziVenduti: 0,
+                            totaleProdotto: 0,
+                        };
+                    }
+                    prodottiMap[idProdotto].pezziVenduti += 1;
+                    prodottiMap[idProdotto].totaleProdotto += prezzoFloat;
+                    totaleDef += prezzoFloat;
+                }
+            }
+            const result = [];
+            const stmt = db.prepare('SELECT nome FROM prodotti WHERE id = ?');
+            for (const id in prodottiMap) {
+                const prodotto = prodottiMap[id];
+                const nomeProdotto = stmt.get(id)?.nome || `Prodotto #${id}`;
+                result.push({
+                    prodotto: nomeProdotto,
+                    pezziVenduti: prodotto.pezziVenduti,
+                    totaleProdotto: parseFloat(prodotto.totaleProdotto.toFixed(2)),
+                });
+            }
+            io.emit('analisi-prodotti', { vendite: result, TotaleDef: parseFloat(totaleDef.toFixed(2)) });
+        } catch (e) {
+            console.error('Errore invio dati riepilogo dopo new-order:', e);
+        }
 
         // 5. Stampa termica automatica
         try {
@@ -675,8 +779,20 @@ io.on('connection', socket => {
 
                 // --- Stampa scontrini per categoria + totale in un unico job ---
                 let bufferUnico = Buffer.alloc(0);
+                // Percorso logo
+                const logoPath = path.join(__dirname, 'img', 'logo.png');
+                let logoBuffer = Buffer.alloc(0);
+                try {
+                    if (fs.existsSync(logoPath)) {
+                        logoBuffer = await getLogoEscPosBuffer(logoPath);
+                        // Aggiungi qualche line feed dopo il logo per separazione
+                        logoBuffer = Buffer.concat([logoBuffer, Buffer.from([0x0A, 0x0A])]);
+                    }
+                } catch (e) {
+                    console.error('Errore caricamento logo:', e);
+                }
                 // Scontrini per categoria
-                Object.entries(prodottiPerCategoria).forEach(([catId, prodottiCat]) => {
+                for (const [catId, prodottiCat] of Object.entries(prodottiPerCategoria)) {
                     const datiScontrinoCat = {
                         numeroScontrino: info.lastInsertRowid,
                         dataOra: order.timestamp,
@@ -687,8 +803,8 @@ io.on('connection', socket => {
                     };
                     const receiptContentCat = generaScontrinoTermicoAvanzato(datiScontrinoCat, CONFIG_STAMPANTE);
                     const contentCat = generateEscPosContent(receiptContentCat);
-                    bufferUnico = Buffer.concat([bufferUnico, contentCat]);
-                });
+                    bufferUnico = Buffer.concat([bufferUnico, logoBuffer, contentCat]);
+                }
                 // Scontrino totale
                 const datiScontrino = {
                     numeroScontrino: info.lastInsertRowid,
@@ -700,7 +816,6 @@ io.on('connection', socket => {
                 };
                 const receiptContent = generaScontrinoTermicoAvanzato(datiScontrino, CONFIG_STAMPANTE);
                 const content = generateEscPosContent(receiptContent);
-                bufferUnico = Buffer.concat([bufferUnico, content]);
                 // Stampa tutto insieme
                 printWithPrinter(printerName, bufferUnico)
                     .then(() => console.log('Stampa termica completata con layout avanzato (job unico).'))
@@ -753,6 +868,63 @@ io.on('connection', socket => {
             }));
 
             if (cb) cb({ success: true });
+
+            // Aggiorna riepiloghi dopo rimozione ordine
+            try {
+                // Ultimo scontrino
+                const lastOrder = db.prepare('SELECT * FROM orders ORDER BY timestamp DESC LIMIT 1').get();
+                const totale = lastOrder ? lastOrder.totale : 0;
+                const riepilogo = lastOrder && lastOrder.recapOrdine ? parseRecapOrdine(lastOrder.recapOrdine, db) : {};
+                io.emit('ultimoScontrino', { riepilogo, totale });
+
+                // Tutti gli ordini
+                const allOrders = db.prepare('SELECT * FROM orders ORDER BY timestamp DESC').all();
+                const elaboratedOrders = allOrders.map(order => ({
+                    id: order.id,
+                    timestamp: order.timestamp,
+                    totale: order.totale,
+                    dettagli: order.recapOrdine ? parseRecapOrdine(order.recapOrdine, db) : {}
+                }));
+                io.emit('recapScontrini', { orders: elaboratedOrders });
+
+                // Analisi prodotti (periodo completo)
+                const ordersForAnalysis = db.prepare('SELECT recapOrdine, timestamp FROM orders').all();
+                const prodottiMap = {};
+                let totaleDef = 0;
+                for (const order of ordersForAnalysis) {
+                    const recap = order.recapOrdine;
+                    if (!recap) continue;
+                    const items = recap.split(',').map(i => i.trim()).filter(Boolean);
+                    for (const item of items) {
+                        const [id, prezzo] = item.split(':');
+                        const idProdotto = id.trim();
+                        const prezzoFloat = parseFloat(prezzo);
+                        if (!prodottiMap[idProdotto]) {
+                            prodottiMap[idProdotto] = {
+                                pezziVenduti: 0,
+                                totaleProdotto: 0,
+                            };
+                        }
+                        prodottiMap[idProdotto].pezziVenduti += 1;
+                        prodottiMap[idProdotto].totaleProdotto += prezzoFloat;
+                        totaleDef += prezzoFloat;
+                    }
+                }
+                const result = [];
+                const stmt = db.prepare('SELECT nome FROM prodotti WHERE id = ?');
+                for (const id in prodottiMap) {
+                    const prodotto = prodottiMap[id];
+                    const nomeProdotto = stmt.get(id)?.nome || `Prodotto #${id}`;
+                    result.push({
+                        prodotto: nomeProdotto,
+                        pezziVenduti: prodotto.pezziVenduti,
+                        totaleProdotto: parseFloat(prodotto.totaleProdotto.toFixed(2)),
+                    });
+                }
+                io.emit('analisi-prodotti', { vendite: result, TotaleDef: parseFloat(totaleDef.toFixed(2)) });
+            } catch (e) {
+                console.error('Errore invio dati riepilogo dopo remove-order:', e);
+            }
         } catch (error) {
             console.error('Errore durante remove-order:', error);
             if (cb) cb({ success: false, error: error.message });
@@ -899,7 +1071,98 @@ io.on('connection', socket => {
         }
     });
 
+    // === API via socket: ultimoScontrino ===
+    socket.on('ultimoScontrino', (cb) => {
+        try {
+            const lastOrder = db.prepare('SELECT * FROM orders ORDER BY timestamp DESC LIMIT 1').get();
+            const totale = lastOrder ? lastOrder.totale : 0;
+            if (!lastOrder || !lastOrder.recapOrdine) {
+                if (cb) cb({ error: 'no data available' });
+                return;
+            }
+            const riepilogo = parseRecapOrdine(lastOrder.recapOrdine, db);
+            if (cb) cb({ riepilogo, totale });
+        } catch (error) {
+            if (cb) cb({ error: error.message });
+        }
+    });
 
+    // === API via socket: recapScontrini ===
+    socket.on('recapScontrini', (cb) => {
+        try {
+            const allOrders = db.prepare('SELECT * FROM orders ORDER BY timestamp DESC').all();
+            if (!allOrders || allOrders.length === 0) {
+                if (cb) cb({ error: 'no data available' });
+                return;
+            }
+            const elaboratedOrders = allOrders.map(order => ({
+                id: order.id,
+                timestamp: order.timestamp,
+                totale: order.totale,
+                dettagli: order.recapOrdine ? parseRecapOrdine(order.recapOrdine, db) : {}
+            }));
+            if (cb) cb({ orders: elaboratedOrders });
+        } catch (error) {
+            if (cb) cb({ error: error.message });
+        }
+    });
+
+    // === API via socket: analisi-prodotti ===
+    socket.on('analisi-prodotti', (params, cb) => {
+        try {
+            let { start, end } = params || {};
+            if (!start || start === "") {
+                start = "1900-01-01T00:00";
+            }
+            if (!end || end === "") {
+                const now = new Date();
+                const pad = n => n < 10 ? '0' + n : n;
+                end = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+            }
+            const startMs = new Date(start).getTime();
+            const endMs = new Date(end).getTime();
+            const orders = db.prepare('SELECT recapOrdine, timestamp FROM orders').all();
+            const filteredOrders = orders.filter(order => {
+                const ts = Number(order.timestamp);
+                return ts >= startMs && ts <= endMs;
+            });
+            const prodottiMap = {};
+            let totaleDef = 0;
+            for (const order of filteredOrders) {
+                const recap = order.recapOrdine;
+                if (!recap) continue;
+                const items = recap.split(',').map(i => i.trim()).filter(Boolean);
+                for (const item of items) {
+                    const [id, prezzo] = item.split(':');
+                    const idProdotto = id.trim();
+                    const prezzoFloat = parseFloat(prezzo);
+                    if (!prodottiMap[idProdotto]) {
+                        prodottiMap[idProdotto] = {
+                            pezziVenduti: 0,
+                            totaleProdotto: 0,
+                        };
+                    }
+                    prodottiMap[idProdotto].pezziVenduti += 1;
+                    prodottiMap[idProdotto].totaleProdotto += prezzoFloat;
+                    totaleDef += prezzoFloat;
+                }
+            }
+            const result = [];
+            const stmt = db.prepare('SELECT nome FROM prodotti WHERE id = ?');
+            for (const id in prodottiMap) {
+                const prodotto = prodottiMap[id];
+                const nomeProdotto = stmt.get(id)?.nome || `Prodotto #${id}`;
+                result.push({
+                    prodotto: nomeProdotto,
+                    pezziVenduti: prodotto.pezziVenduti,
+                    totaleProdotto: parseFloat(prodotto.totaleProdotto.toFixed(2)),
+                });
+            }
+            if (cb) cb({ vendite: result, TotaleDef: parseFloat(totaleDef.toFixed(2)) });
+        } catch (error) {
+            if (cb) cb({ error: 'Errore nel calcolo vendite' });
+        }
+    });
 
     socket.on('product', product => {
         products.push(product)
@@ -994,6 +1257,7 @@ function parseRecapOrdine(recapOrdine, db) {
 
     return result;
 }
+/*
 app.get('/ultimoScontrino', (req, res) => {
     try {
         const lastOrder = db.prepare('SELECT * FROM orders ORDER BY timestamp DESC LIMIT 1').get();
@@ -1094,7 +1358,7 @@ app.get('/analisi-prodotti', (req, res) => {
         res.status(500).json({ error: 'Errore nel calcolo vendite' });
     }
 });
-
+*/
 app.get("/get-db-from-folder", (req, res) => {
     try {
         const dbs = fs

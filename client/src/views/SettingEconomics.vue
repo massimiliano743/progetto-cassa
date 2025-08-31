@@ -11,6 +11,7 @@ import {
     recapSellProduct
 } from '@/economicsSettingvue.js'
 import {useRouter} from "vue-router";
+import { getSocketSync, createSocket } from '@/socket.js'
 
 const ultimoScontrinoVar = ref({})
 const allOrders = ref([])
@@ -35,6 +36,26 @@ onMounted(async () => {
         const prodottiRecap = await recapSellProduct()
         recapProdottiOrdine.value = prodottiRecap.vendite
         totaleDef.value = prodottiRecap.TotaleDef
+
+        // === LISTENER SOCKET.IO PER AGGIORNAMENTO LIVE ===
+        const socket = getSocketSync() || await createSocket();
+        socket.on('ultimoScontrino', (data) => {
+            if (data) {
+                ultimoScontrinoVar.value = data.riepilogo || {}
+                totUltimoScontrino.value = data.totale || 0
+            }
+        });
+        socket.on('recapScontrini', (data) => {
+            if (data && data.orders) {
+                allOrders.value = data.orders
+            }
+        });
+        socket.on('analisi-prodotti', (data) => {
+            if (data) {
+                recapProdottiOrdine.value = data.vendite || []
+                totaleDef.value = data.TotaleDef || 0
+            }
+        });
     } catch (error) {
         console.error('Errore in onMounted:', error)
     }
@@ -257,6 +278,12 @@ function tornaIndietro() {
         flex-direction: column;
         align-items: center;
         width: 70%;
+        .date-selection{
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            align-items: center;
+        }
         .tabella-scontrino, .tabella-ordini, .tabella-prodotti {
             width: 100%;
             border-collapse: collapse;

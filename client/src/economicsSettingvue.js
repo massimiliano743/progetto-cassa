@@ -39,25 +39,30 @@ export function initMenuToggle() {
         });
     });
 }
+
 export async function ultimoScontrino() {
-    const lastReceiptResponse = await fetch(`http://${urlServer}:3000/ultimoScontrino`);
-    if (lastReceiptResponse.ok) {
-        const lastReceipt = await lastReceiptResponse.json();
-        console.log("Ultimo scontrino:", lastReceipt);
-        return lastReceipt;
-    } else {
-        console.error("Errore nel recupero dell'ultimo scontrino");
-        return null;
-    }
+    const socket = getSocketSync() || await createSocket();
+    return new Promise((resolve, reject) => {
+        socket.emit('ultimoScontrino', (res) => {
+            if (!res || res.error) {
+                console.error("Errore nel recupero dell'ultimo scontrino", res?.error);
+                return reject(res?.error || 'Errore sconosciuto');
+            }
+            resolve(res);
+        });
+    });
 }
+
 export async function allOrder() {
-    const allOrders = await fetch(`http://${urlServer}:3000/recapScontrini`);
-    if (allOrders.ok) {
-        const order = await allOrders.json();
-        return order;
-    } else {
-        return null;
-    }
+    const socket = getSocketSync() || await createSocket();
+    return new Promise((resolve, reject) => {
+        socket.emit('recapScontrini', (res) => {
+            if (!res || res.error) {
+                return reject(res?.error || 'Errore sconosciuto');
+            }
+            resolve(res);
+        });
+    });
 }
 
 export async function removeOrder(uuid) {
@@ -75,18 +80,16 @@ export async function removeOrder(uuid) {
         });
     });
 }
+
 export async function recapSellProduct(start, end){
-    let url = `http://${urlServer}:3000/analisi-prodotti`;
-    if (start !== undefined && end !== undefined) {
-        url += `?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
-    }
-    const recapOrder = await fetch(url);
-    if (recapOrder.ok) {
-        const order = await recapOrder.json();
-        console.log("allOrders:", order);
-        return order;
-    } else {
-        console.error("Errore nel recupero ordini");
-        return null;
-    }
+    const socket = getSocketSync() || await createSocket();
+    return new Promise((resolve, reject) => {
+        socket.emit('analisi-prodotti', { start, end }, (res) => {
+            if (!res || res.error) {
+                console.error("Errore nel recupero ordini", res?.error);
+                return reject(res?.error || 'Errore sconosciuto');
+            }
+            resolve(res);
+        });
+    });
 }
