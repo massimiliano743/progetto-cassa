@@ -19,7 +19,8 @@ const recapProdottiOrdine = ref([]);
 const totaleDef = ref(0)
 const router = useRouter()
 
-
+const startDate = ref("");
+const endDate = ref("");
 
 onMounted(async () => {
     try {
@@ -45,6 +46,19 @@ async function handleRemove(id) {
         alert(`⚠️ Ordine Rimosso con successo: ${id}`);
     } catch (error) {
         console.error('Errore durante la rimozione ordine:', error)
+    }
+}
+async function handleFilter() {
+    try {
+        const start = startDate.value;
+        const end = endDate.value;
+        const prodottiRecap = await recapSellProduct(start, end);
+        if (prodottiRecap) {
+            recapProdottiOrdine.value = prodottiRecap.vendite;
+            totaleDef.value = prodottiRecap.TotaleDef;
+        }
+    } catch (error) {
+        console.error('Errore nel filtro ordini:', error)
     }
 }
 function tornaIndietro() {
@@ -141,6 +155,13 @@ function tornaIndietro() {
                 </table>
             </div>
             <div class="contenuto hidden" id="prodotti">
+                <div class="date-selection">
+                    <label for="start-date">Data Inizio:</label>
+                    <input type="datetime-local" id="start-date" name="start-date" v-model="startDate">
+                    <label for="end-date">Data Fine:</label>
+                    <input type="datetime-local" id="end-date" name="end-date" v-model="endDate">
+                    <button @click="handleFilter">Filtra</button>
+                </div>
                 <table class="tabella-prodotti">
                     <thead>
                     <tr>

@@ -1026,68 +1026,75 @@ app.get('/recapScontrini', (req, res) => {
                 dettagli: order.recapOrdine ? parseRecapOrdine(order.recapOrdine, db) : {}
             };
         });
-
         res.json({ orders: elaboratedOrders });
-
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 app.get('/analisi-prodotti', (req, res) => {
     try {
-        const orders = db.prepare('SELECT recapOrdine FROM orders').all();
-        const prodottiMap = {}; // { idProdotto: { pezziVenduti, totalePrezzo } }
+        // Prendi i parametri start e end dalla query
+        let { start, end } = req.query;
+        if (!start || start === "") {
+            start = "1900-01-01T00:00";
+        }
+        if (!end || end === "") {
+            const now = new Date();
+            const pad = n => n < 10 ? '0' + n : n;
+            end = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+        }
+        const startMs = new Date(start).getTime();
+        const endMs = new Date(end).getTime();
+        // Prendi tutti gli ordini
+        const orders = db.prepare('SELECT recapOrdine, timestamp FROM orders').all();
+        // Filtra per timestamp
+        const filteredOrders = orders.filter(order => {
+            const ts = Number(order.timestamp);
+            return ts >= startMs && ts <= endMs;
+        });
+        const prodottiMap = {};
         let totaleDef = 0;
-
-        for (const order of orders) {
+        for (const order of filteredOrders) {
             const recap = order.recapOrdine;
             if (!recap) continue;
-
             const items = recap.split(',').map(i => i.trim()).filter(Boolean);
-
             for (const item of items) {
                 const [id, prezzo] = item.split(':');
                 const idProdotto = id.trim();
                 const prezzoFloat = parseFloat(prezzo);
-
                 if (!prodottiMap[idProdotto]) {
                     prodottiMap[idProdotto] = {
                         pezziVenduti: 0,
                         totaleProdotto: 0,
                     };
                 }
-
                 prodottiMap[idProdotto].pezziVenduti += 1;
                 prodottiMap[idProdotto].totaleProdotto += prezzoFloat;
                 totaleDef += prezzoFloat;
             }
         }
-
         // Recupera i nomi dalla tabella prodotti
         const result = [];
         const stmt = db.prepare('SELECT nome FROM prodotti WHERE id = ?');
-
         for (const id in prodottiMap) {
             const prodotto = prodottiMap[id];
             const nomeProdotto = stmt.get(id)?.nome || `Prodotto #${id}`;
-
             result.push({
                 prodotto: nomeProdotto,
                 pezziVenduti: prodotto.pezziVenduti,
                 totaleProdotto: parseFloat(prodotto.totaleProdotto.toFixed(2)),
             });
         }
-
         res.json({
             vendite: result,
             TotaleDef: parseFloat(totaleDef.toFixed(2))
         });
-
     } catch (error) {
         console.error('Errore nella generazione analisi vendite:', error);
         res.status(500).json({ error: 'Errore nel calcolo vendite' });
     }
 });
+
 app.get("/get-db-from-folder", (req, res) => {
     try {
         const dbs = fs

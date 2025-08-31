@@ -54,10 +54,8 @@ export async function allOrder() {
     const allOrders = await fetch(`http://${urlServer}:3000/recapScontrini`);
     if (allOrders.ok) {
         const order = await allOrders.json();
-        console.log("allOrders:", order);
         return order;
     } else {
-        console.error("Errore nel recupero ordini");
         return null;
     }
 }
@@ -77,8 +75,12 @@ export async function removeOrder(uuid) {
         });
     });
 }
-export async function recapSellProduct(){
-    const recapOrder = await fetch(`http://${urlServer}:3000/analisi-prodotti`);
+export async function recapSellProduct(start, end){
+    let url = `http://${urlServer}:3000/analisi-prodotti`;
+    if (start !== undefined && end !== undefined) {
+        url += `?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+    }
+    const recapOrder = await fetch(url);
     if (recapOrder.ok) {
         const order = await recapOrder.json();
         console.log("allOrders:", order);
