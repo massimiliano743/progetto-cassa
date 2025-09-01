@@ -17,8 +17,38 @@ const prodottiSelezionatiAggiornati = ref([]);
 // Nuovo oggetto reattivo per le quantità selezionate nella modale
 const quantitàSelezionate = reactive({});
 const orderIdModaleRemoveSingleProduct = ref(null);
+const optionOrder = ref(false);
 
+const scontoTotale = ref(false);
+const scontoParziale = ref(false);
+const valoreScontoParziale = ref(0);
+const noteOrdine = ref("");
 
+function toggleScontoTotale() {
+  scontoTotale.value = !scontoTotale.value;
+  if (scontoTotale.value) scontoParziale.value = false;
+}
+function toggleScontoParziale() {
+  scontoParziale.value = !scontoParziale.value;
+  if (scontoParziale.value) scontoTotale.value = false;
+}
+
+function confermaOpzioniOrdine() {
+    let tipoSconto = null;
+    let valoreSconto = null;
+    if (scontoTotale.value) {
+        tipoSconto = 'totale';
+        valoreSconto = '100';
+    } else if (scontoParziale.value) {
+        tipoSconto = 'parziale';
+        valoreSconto = valoreScontoParziale.value;
+    }
+    console.log('Tipo sconto:', tipoSconto);
+    console.log('Valore sconto:', valoreSconto);
+    console.log('Note ordine:', noteOrdine.value);
+    // Chiudi solo la modale, NON resettare le selezioni
+    optionOrder.value = false;
+}
 
 const quantitaLocali = reactive({});
 
@@ -59,6 +89,16 @@ onMounted(async () => {
 });
 const scontrino = ref([]);
 var conto = ref(0);
+const totaleScontato = computed(() => {
+    let totale = conto.value;
+    if (scontoTotale.value) {
+        totale = 0;
+    } else if (scontoParziale.value && valoreScontoParziale.value > 0) {
+        totale = totale - (totale * valoreScontoParziale.value / 100);
+    }
+    return totale < 0 ? 0 : totale;
+});
+
 function aggiungiAScontrino(prodotto) {
     console.log('Aggiunto prodotto allo scontrino:', prodotto);
     conto.value = conto.value + prodotto.prezzo;
@@ -106,10 +146,25 @@ async function inviaOrdine() {
             }
             return;
         }
-        const arrayProdotto = scontrino.value.map(prodotto => `${prodotto.idProdotto}:${prodotto.prezzo}`).join(',');
-        orderStore.addOrder(arrayProdotto, conto.value.toFixed(2));
+        let arrayProdotto;
+        if (scontoTotale.value) {
+            arrayProdotto = scontrino.value.map(prodotto => `${prodotto.idProdotto}:0`).join(',');
+        } else if (scontoParziale.value && valoreScontoParziale.value > 0) {
+            arrayProdotto = scontrino.value.map(prodotto => {
+                const prezzoScontato = (prodotto.prezzo - (prodotto.prezzo * valoreScontoParziale.value / 100)).toFixed(2);
+                return `${prodotto.idProdotto}:${prezzoScontato}`;
+            }).join(',');
+        } else {
+            arrayProdotto = scontrino.value.map(prodotto => `${prodotto.idProdotto}:${prodotto.prezzo}`).join(',');
+        }
+        orderStore.addOrder(arrayProdotto, totaleScontato.value.toFixed(2), noteOrdine.value ? noteOrdine.value : "");
         scontrino.value = [];
         conto.value = 0;
+        // Reset delle checkbox sconti e campo note
+        scontoTotale.value = false;
+        scontoParziale.value = false;
+        noteOrdine.value = "";
+        // valoreScontoParziale.value rimane invariato
         alert('Ordine inviato con successo!');
     } catch (err) {
         alert('Errore durante il controllo quantità: ' + err.message);
@@ -252,6 +307,19 @@ async function confermaSelezioneProdotti(){
     }
     closeProductModal();
 }
+function openOption()
+{
+    optionOrder.value = true;
+    console.log("modale opzioni ordine aperto");
+}
+function closeOption()
+{
+    optionOrder.value = false;
+    scontoTotale.value = false;
+    scontoParziale.value = false;
+    noteOrdine.value = "";
+    console.log("modale opzioni ordine chiuso");
+}
 
 </script>
 
@@ -299,10 +367,13 @@ async function confermaSelezioneProdotti(){
                 <div v-if="scontrino.length === 0">Nessun prodotto aggiunto</div>
             </div>
             <div class="conto-economico">
-                <h3>Totale: {{ conto.toFixed(2) }}€</h3>
+                <h3>Totale: {{ totaleScontato.toFixed(2) }}€</h3>
             </div>
             <div class="pagamento">
-                <button @click="inviaOrdine" :disabled="scontrino.length === 0" class="button-mobile-device">Paga</button>
+                <div class="button-paga-options">
+                    <button @click="inviaOrdine" :disabled="scontrino.length === 0" class="paga-button">Paga</button>
+                    <button @click="openOption" :disabled="scontrino.length === 0" class="option-button"></button>
+                </div>
                 <div class="hidde-function-button">
                     <button @click="annullaOrdine" class="button-mobile-device">Annulla ordine</button>
                     <button @click="stornaElementoDaOrdine" class="button-mobile-device">Storna Singolo Prodotto</button>
@@ -357,6 +428,29 @@ async function confermaSelezioneProdotti(){
             <div class="modal-actions">
                 <button @click="closeProductModal">Annulla</button>
                 <button @click="confermaSelezioneProdotti">Conferma</button>
+            </div>
+        </div>
+    </div>
+    <!-- Modale selezione sconti/note/omaggi -->
+    <div v-if="optionOrder" class="modal-overlay" >
+        <div class="modal" id="remove-single-product-modal" :idOrder="orderIdModaleRemoveSingleProduct">
+            <h3>Modificatore Ordine</h3>
+            <div class="checkbox-row">
+                <input type="checkbox" id="sconto-totale" :checked="scontoTotale" @change="toggleScontoTotale" />
+                <label for="sconto-totale">Sconto totale ordine</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="sconto-parziale" :checked="scontoParziale" @change="toggleScontoParziale" />
+                <label for="sconto-parziale">Sconto parziale</label>
+                <input type="number" min="0" max="100" v-model="valoreScontoParziale" :disabled="!scontoParziale" style="margin-left:10px;width:70px;" placeholder="%" />
+            </div>
+            <div class="checkbox-row">
+                <label for="note-ordine">Note ordine</label>
+                <input type="text" id="note-ordine" v-model="noteOrdine" style="flex:1;margin-left:10px;" placeholder="Scrivi una nota..." />
+            </div>
+            <div class="modal-actions">
+                <button @click="closeOption">Annulla</button>
+                <button @click="confermaOpzioniOrdine">Conferma</button>
             </div>
         </div>
     </div>
@@ -417,6 +511,10 @@ async function confermaSelezioneProdotti(){
             text-align: center;
             position: sticky;
             bottom: 0;
+            h3{
+                margin-top: 0;
+                margin-bottom: 0;
+            }
         }
         .pagamento{
             width: auto;
@@ -425,11 +523,28 @@ async function confermaSelezioneProdotti(){
             text-align: center;
             position: sticky;
             bottom: 0;
+            .button-paga-options{
+                display: flex;
+                flex-direction: row;
+                gap: 10px;
+                .paga-button{
+                    width: 80%;
+                    height: 60px;
+                }
+                .option-button{
+                    width: 20%;
+                    background-image: url("data:image/svg+xml,%3C%3Fxml version='1.0' encoding='utf-8'%3F%3E%3C!-- Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools --%3E%3Csvg width='60px' height='60px' viewBox='0 0 1080 1080' class='icon' version='1.1' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M249.6 460.8l108.8 211.2 202.666667-83.2 93.866666-270.933333-315.733333 17.066666z' fill='%23E69329' /%3E%3Cpath d='M320 768m-166.4 0a166.4 166.4 0 1 0 332.8 0 166.4 166.4 0 1 0-332.8 0Z' fill='%23546E7A' /%3E%3Cpath d='M320 576c-106.666667 0-192 85.333333-192 192s85.333333 192 192 192 192-85.333333 192-192-85.333333-192-192-192z m0 341.333333c-83.2 0-149.333333-66.133333-149.333333-149.333333s66.133333-149.333333 149.333333-149.333333 149.333333 66.133333 149.333333 149.333333-66.133333 149.333333-149.333333 149.333333z' fill='%2390A4AE' /%3E%3Cpath d='M298.666667 704h42.666666v170.666667h-42.666666z' fill='%2390A4AE' /%3E%3Cpath d='M275.2 768c21.333333 40.533333 68.266667 57.6 108.8 36.266667l352-181.333334c21.333333-10.666667 36.266667-25.6 46.933333-40.533333 36.266667-68.266667 119.466667-228.266667 174.933334-366.933333l-388.266667 185.6-102.4 153.6-145.066667 76.8c-55.466667 27.733333-72.533333 89.6-46.933333 136.533333z' fill='%23FFB74D' /%3E%3Cpath d='M644.266667 64L292.266667 198.4c-14.933333 4.266667-32 21.333333-46.933334 36.266667l-119.466666 160c-21.333333 32-25.6 72.533333-10.666667 108.8 8.533333 21.333333 36.266667 72.533333 66.133333 130.133333C215.466667 597.333333 264.533333 576 320 576c8.533333 0 19.2 0 27.733333 2.133333l-44.8-89.6 98.133334-87.466666h170.666666s330.666667-46.933333 388.266667-185.6L644.266667 64z' fill='%23FFB74D' /%3E%3Cpath d='M388.266667 768c-27.733333 12.8-59.733333 0-70.4-27.733333-12.8-27.733333 0-59.733333 27.733333-70.4 25.6-12.8 68.266667 85.333333 42.666667 98.133333z' fill='%23FFCDD2' /%3E%3C/svg%3E");
+                    background-repeat: no-repeat;
+                    width: 60px;
+                    height: 60px;
+                }
+            }
             .hidde-function-button{
                 padding-top: 10px;
                 display: flex;
                 flex-direction: column;
                 gap: 10px;
+                align-items: center;
             }
             button{
                 width: 100%;

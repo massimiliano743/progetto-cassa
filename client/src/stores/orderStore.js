@@ -30,12 +30,13 @@ export const useOrderStore = defineStore('orderStore', {
                 this.orders = orders
             })
         },
-        async addOrder(prodotti, totale) {
+        async addOrder(prodotti, totale, nota = "") {
             const newOrder = {
                 uuid: uuidv4(),
                 prodotti,
                 totale,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                note: nota ? nota : ""
             }
             this.orders.push(newOrder)
             const socket = getSocketSync() || await createSocket();

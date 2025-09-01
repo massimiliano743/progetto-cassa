@@ -379,7 +379,8 @@ function openDb(dbName) {
                 uuid TEXT,
                 recapOrdine TEXT,
                 totale REAL,
-                timestamp TEXT
+                timestamp TEXT,
+                note TEXT CHECK(LENGTH(note) <= 1000)
             )`).run();
         newDb.prepare(`CREATE TABLE IF NOT EXISTS categories
             (
@@ -622,6 +623,15 @@ io.on('connection', socket => {
         // Aggiunto [COMANDO:TESTO_NORMALE] per riportare il testo alla dimensione standard dopo il totale grande.
         scontrino.push(`[COMANDO:ALLINEA_DESTRA][COMANDO:TESTO_GRANDE]${testoTotale}[COMANDO:TESTO_NORMALE]`);
         scontrino.push('');
+        // Stampa la nota se presente
+        if (datiOrdine.note && datiOrdine.note.trim() !== "") {
+            scontrino.push('');
+            scontrino.push(`[COMANDO:CENTRA]Nota:[COMANDO:TESTO_NORMALE] [COMANDO:GRASSETTO] ${datiOrdine.note}[COMANDO:GRASSETTO_OFF] [COMANDO:TESTO_NORMALE]`);
+            scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
+            scontrino.push('');
+            scontrino.push('');
+            scontrino.push('');
+        }
         scontrino.push('[COMANDO:CENTRA]Grazie per il tuo acquisto!');
         scontrino.push('');
         scontrino.push('');
@@ -639,12 +649,15 @@ io.on('connection', socket => {
     socket.on('new-order', async (order, cb) => {
         console.log('Nuovo ordine ricevuto:', order);
 
-        // 1. Conta le occorrenze di ogni id prodotto
+        // 1. Conta le occorrenze di ogni id prodotto e salva i prezzi pagati
         const counts = {};
+        const prezziPagati = {};
         const items = String(order.prodotti).split(',');
         items.forEach(item => {
-            const [id] = item.split(':');
+            const [id, prezzo] = item.split(':');
             counts[id] = (counts[id] || 0) + 1;
+            if (!prezziPagati[id]) prezziPagati[id] = [];
+            prezziPagati[id].push(parseFloat(prezzo));
         });
 
         // 2. Aggiorna la quantità nel database
@@ -660,12 +673,13 @@ io.on('connection', socket => {
         io.emit('product-list', prodottiAggiornati);
 
         // 4. Salva l'ordine
-        const stmt = db.prepare('INSERT INTO orders (uuid, recapOrdine, totale, timestamp ) VALUES (?, ?, ?, ?)');
+        const stmt = db.prepare('INSERT INTO orders (uuid, recapOrdine, totale, timestamp, note) VALUES (?, ?, ?, ?, ?)');
         const info = stmt.run(
             String(order.uuid),
             String(order.prodotti),
             order.totale,
-            order.timestamp
+            order.timestamp,
+            order.note ? String(order.note).substring(0, 1000) : null
         );
         const nuovoOrder = { id: info.lastInsertRowid, ...order };
 
@@ -750,13 +764,17 @@ io.on('connection', socket => {
                 const prodottiPerScontrino = [];
                 const prodottiPerCategoria = {};
                 Object.entries(counts).forEach(([id, count]) => {
-                    const p = db.prepare('SELECT nome, prezzo, tipologia FROM prodotti WHERE id = ?').get(id);
+                    const p = db.prepare('SELECT nome, tipologia FROM prodotti WHERE id = ?').get(id);
                     if (p) {
+                        // Calcola prezzo unitario medio e totale pagato
+                        const prezzi = prezziPagati[id] || [];
+                        const prezzoUnitario = prezzi.length > 0 ? prezzi.reduce((a,b) => a+b,0)/prezzi.length : 0;
+                        const totale = prezzi.reduce((a,b) => a+b,0);
                         prodottiPerScontrino.push({
                             nome: p.nome,
                             quantita: count,
-                            prezzoUnitario: p.prezzo,
-                            totale: count * p.prezzo,
+                            prezzoUnitario: prezzoUnitario,
+                            totale: totale,
                             tipologia: p.tipologia
                         });
                         // Raggruppa per categoria
@@ -764,8 +782,8 @@ io.on('connection', socket => {
                         prodottiPerCategoria[p.tipologia].push({
                             nome: p.nome,
                             quantita: count,
-                            prezzoUnitario: p.prezzo,
-                            totale: count * p.prezzo
+                            prezzoUnitario: prezzoUnitario,
+                            totale: totale
                         });
                     }
                 });
@@ -786,7 +804,7 @@ io.on('connection', socket => {
                     if (fs.existsSync(logoPath)) {
                         logoBuffer = await getLogoEscPosBuffer(logoPath);
                         // Aggiungi qualche line feed dopo il logo per separazione
-                        logoBuffer = Buffer.concat([logoBuffer, Buffer.from([0x0A, 0x0A])]);
+                        logoBuffer = Buffer.concat([logoBuffer, Buffer.from([])]);
                     }
                 } catch (e) {
                     console.error('Errore caricamento logo:', e);
@@ -799,7 +817,8 @@ io.on('connection', socket => {
                         titoloAzienda: NOME_AZIENDA,
                         sottotitoloAzienda: categorieNomi[catId],
                         prodotti: prodottiCat,
-                        totaleOrdine: prodottiCat.reduce((acc, p) => acc + p.totale, 0)
+                        totaleOrdine: prodottiCat.reduce((acc, p) => acc + p.totale, 0),
+                        note: order.note || ''
                     };
                     const receiptContentCat = generaScontrinoTermicoAvanzato(datiScontrinoCat, CONFIG_STAMPANTE);
                     const contentCat = generateEscPosContent(receiptContentCat);
@@ -812,10 +831,13 @@ io.on('connection', socket => {
                     titoloAzienda: NOME_AZIENDA,
                     sottotitoloAzienda: SOTTOTITOLO_AZIENDA,
                     prodotti: prodottiPerScontrino,
-                    totaleOrdine: order.totale
+                    totaleOrdine: prodottiPerScontrino.reduce((acc, p) => acc + p.totale, 0),
+                    note: order.note || ''
                 };
                 const receiptContent = generaScontrinoTermicoAvanzato(datiScontrino, CONFIG_STAMPANTE);
                 const content = generateEscPosContent(receiptContent);
+                // Aggiungi anche il totale al bufferUnico
+                bufferUnico = Buffer.concat([bufferUnico, logoBuffer, content]);
                 // Stampa tutto insieme
                 printWithPrinter(printerName, bufferUnico)
                     .then(() => console.log('Stampa termica completata con layout avanzato (job unico).'))
@@ -1257,108 +1279,6 @@ function parseRecapOrdine(recapOrdine, db) {
 
     return result;
 }
-/*
-app.get('/ultimoScontrino', (req, res) => {
-    try {
-        const lastOrder = db.prepare('SELECT * FROM orders ORDER BY timestamp DESC LIMIT 1').get();
-        const totale = lastOrder ? lastOrder.totale : 0;
-        if (!lastOrder || !lastOrder.recapOrdine) {
-            return res.status(404).json({ error: 'no data available' });
-        }
-
-        const riepilogo = parseRecapOrdine(lastOrder.recapOrdine, db);
-
-        res.json({ riepilogo, totale });
-
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-app.get('/recapScontrini', (req, res) => {
-    try {
-        const allOrders = db.prepare('SELECT * FROM orders ORDER BY timestamp DESC').all();
-
-        if (!allOrders || allOrders.length === 0) {
-            return res.status(404).json({ error: 'no data available' });
-        }
-
-        const elaboratedOrders = allOrders.map(order => {
-            return {
-                id: order.id,
-                timestamp: order.timestamp,
-                totale: order.totale,
-                dettagli: order.recapOrdine ? parseRecapOrdine(order.recapOrdine, db) : {}
-            };
-        });
-        res.json({ orders: elaboratedOrders });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-app.get('/analisi-prodotti', (req, res) => {
-    try {
-        // Prendi i parametri start e end dalla query
-        let { start, end } = req.query;
-        if (!start || start === "") {
-            start = "1900-01-01T00:00";
-        }
-        if (!end || end === "") {
-            const now = new Date();
-            const pad = n => n < 10 ? '0' + n : n;
-            end = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
-        }
-        const startMs = new Date(start).getTime();
-        const endMs = new Date(end).getTime();
-        // Prendi tutti gli ordini
-        const orders = db.prepare('SELECT recapOrdine, timestamp FROM orders').all();
-        // Filtra per timestamp
-        const filteredOrders = orders.filter(order => {
-            const ts = Number(order.timestamp);
-            return ts >= startMs && ts <= endMs;
-        });
-        const prodottiMap = {};
-        let totaleDef = 0;
-        for (const order of filteredOrders) {
-            const recap = order.recapOrdine;
-            if (!recap) continue;
-            const items = recap.split(',').map(i => i.trim()).filter(Boolean);
-            for (const item of items) {
-                const [id, prezzo] = item.split(':');
-                const idProdotto = id.trim();
-                const prezzoFloat = parseFloat(prezzo);
-                if (!prodottiMap[idProdotto]) {
-                    prodottiMap[idProdotto] = {
-                        pezziVenduti: 0,
-                        totaleProdotto: 0,
-                    };
-                }
-                prodottiMap[idProdotto].pezziVenduti += 1;
-                prodottiMap[idProdotto].totaleProdotto += prezzoFloat;
-                totaleDef += prezzoFloat;
-            }
-        }
-        // Recupera i nomi dalla tabella prodotti
-        const result = [];
-        const stmt = db.prepare('SELECT nome FROM prodotti WHERE id = ?');
-        for (const id in prodottiMap) {
-            const prodotto = prodottiMap[id];
-            const nomeProdotto = stmt.get(id)?.nome || `Prodotto #${id}`;
-            result.push({
-                prodotto: nomeProdotto,
-                pezziVenduti: prodotto.pezziVenduti,
-                totaleProdotto: parseFloat(prodotto.totaleProdotto.toFixed(2)),
-            });
-        }
-        res.json({
-            vendite: result,
-            TotaleDef: parseFloat(totaleDef.toFixed(2))
-        });
-    } catch (error) {
-        console.error('Errore nella generazione analisi vendite:', error);
-        res.status(500).json({ error: 'Errore nel calcolo vendite' });
-    }
-});
-*/
 app.get("/get-db-from-folder", (req, res) => {
     try {
         const dbs = fs

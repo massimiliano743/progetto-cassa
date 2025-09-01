@@ -111,6 +111,32 @@ button:focus-visible {
     font-size: 20px;
     height: 100%;
   }
+  .modal .checkbox-row input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 20px;
+    height: 20px;
+    border: 2px solid #555;
+    border-radius: 4px;
+    cursor: pointer;
+    position: relative;
+    background: white;
+    transition: all 0.2s;
+  }
+
+  .modal .checkbox-row input:checked {
+    background-color: #4CAF50;
+    border-color: #4CAF50;
+  }
+
+  .modal .checkbox-row input:checked::after {
+    content: "✔";
+    color: white;
+    font-size: 14px;
+    position: absolute;
+    top: 0;
+    left: 3px;
+  }
 
   .modal-actions {
     margin-top: 1rem;
