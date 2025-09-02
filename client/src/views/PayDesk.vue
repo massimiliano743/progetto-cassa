@@ -24,6 +24,10 @@ const scontoParziale = ref(false);
 const valoreScontoParziale = ref(0);
 const noteOrdine = ref("");
 
+const noteProdottiArray = ref([]);
+
+const noteProdotti = reactive({});
+
 function toggleScontoTotale() {
   scontoTotale.value = !scontoTotale.value;
   if (scontoTotale.value) scontoParziale.value = false;
@@ -43,6 +47,10 @@ function confermaOpzioniOrdine() {
         tipoSconto = 'parziale';
         valoreSconto = valoreScontoParziale.value;
     }
+    // Copia le note dall'array alle istanze dei prodotti nello scontrino
+    scontrino.value.forEach((p, i) => {
+        p.note = noteProdottiArray.value[i] || "";
+    });
     console.log('Tipo sconto:', tipoSconto);
     console.log('Valore sconto:', valoreSconto);
     console.log('Note ordine:', noteOrdine.value);
@@ -102,7 +110,8 @@ const totaleScontato = computed(() => {
 function aggiungiAScontrino(prodotto) {
     console.log('Aggiunto prodotto allo scontrino:', prodotto);
     conto.value = conto.value + prodotto.prezzo;
-    scontrino.value.push(prodotto);
+    // Aggiungi la proprietà note all'oggetto prodotto
+    scontrino.value.push({ ...prodotto, note: '' });
     decrementaQuantita(prodotto.nome);
     console.log('Scontrino attuale:', scontrino.value);
 }
@@ -132,8 +141,7 @@ async function inviaOrdine() {
         return;
     }
     const ids = scontrino.value.map(prodotto => prodotto.idProdotto);
-    try {
-        const prodottiNonDisponibili = await orderStore.checkQuantity(ids);
+    orderStore.checkQuantity(ids).then(prodottiNonDisponibili => {
         if (prodottiNonDisponibili && prodottiNonDisponibili.length > 0) {
             const idsNonDisponibili = prodottiNonDisponibili.map(p => p.id);
             const nomiRimossi = scontrino.value.filter(prod => idsNonDisponibili.includes(prod.idProdotto)).map(prod => prod.nome);
@@ -146,29 +154,31 @@ async function inviaOrdine() {
             }
             return;
         }
-        let arrayProdotto;
+        // Costruisci array prodotti con note per ciascuno
+        let arrayProdotto = scontrino.value.map(prodotto => ({
+            id: prodotto.idProdotto,
+            nome: prodotto.nome,
+            prezzo: prodotto.prezzo,
+            quantita: 1,
+            note: prodotto.note || ""
+        }));
+        // Applica sconti
         if (scontoTotale.value) {
-            arrayProdotto = scontrino.value.map(prodotto => `${prodotto.idProdotto}:0`).join(',');
+            arrayProdotto = arrayProdotto.map(p => ({ ...p, prezzo: 0 }));
         } else if (scontoParziale.value && valoreScontoParziale.value > 0) {
-            arrayProdotto = scontrino.value.map(prodotto => {
-                const prezzoScontato = (prodotto.prezzo - (prodotto.prezzo * valoreScontoParziale.value / 100)).toFixed(2);
-                return `${prodotto.idProdotto}:${prezzoScontato}`;
-            }).join(',');
-        } else {
-            arrayProdotto = scontrino.value.map(prodotto => `${prodotto.idProdotto}:${prodotto.prezzo}`).join(',');
+            arrayProdotto = arrayProdotto.map(p => ({ ...p, prezzo: (p.prezzo - (p.prezzo * valoreScontoParziale.value / 100)).toFixed(2) }));
         }
-        orderStore.addOrder(arrayProdotto, totaleScontato.value.toFixed(2), noteOrdine.value ? noteOrdine.value : "");
+        orderStore.addOrder(arrayProdotto, totaleScontato.value.toFixed(2));
         scontrino.value = [];
         conto.value = 0;
-        // Reset delle checkbox sconti e campo note
         scontoTotale.value = false;
         scontoParziale.value = false;
         noteOrdine.value = "";
-        // valoreScontoParziale.value rimane invariato
+        Object.keys(noteProdotti).forEach(k => noteProdotti[k] = "");
         alert('Ordine inviato con successo!');
-    } catch (err) {
+    }).catch(err => {
         alert('Errore durante il controllo quantità: ' + err.message);
-    }
+    });
 }
 
 function annullaOrdine() {
@@ -309,6 +319,8 @@ async function confermaSelezioneProdotti(){
 }
 function openOption()
 {
+    // Inizializza l'array delle note con le note attuali dei prodotti nello scontrino
+    noteProdottiArray.value = scontrino.value.map(p => p.note || "");
     optionOrder.value = true;
     console.log("modale opzioni ordine aperto");
 }
@@ -358,9 +370,7 @@ function closeOption()
                     <div v-for="(prodotto, index) in scontrino" :key="index">
                         <div class="prodotto-remove-scontrino">
                             <div class="prodotto">{{ prodotto.nome }}</div><div class="prodotto">{{ prodotto.prezzo }}€</div>
-                            <div class="remove-single-product" @click="rimuoviProdottoScontrino(index)">
-                                <!-- Icona per rimuovere il prodotto -->
-                            </div>
+                            <div class="remove-single-product" @click="rimuoviProdottoScontrino(index)"></div>
                         </div>
                     </div>
                 </div>
@@ -376,7 +386,7 @@ function closeOption()
                 </div>
                 <div class="hidde-function-button">
                     <button @click="annullaOrdine" class="button-mobile-device">Annulla ordine</button>
-                    <button @click="stornaElementoDaOrdine" class="button-mobile-device">Storna Singolo Prodotto</button>
+                    <button @click="stornaElementoDaOrdine" class="button-mobile-device">Modifica ordine</button>
                 </div>
             </div>
         </div>
@@ -444,9 +454,9 @@ function closeOption()
                 <label for="sconto-parziale">Sconto parziale</label>
                 <input type="number" min="0" max="100" v-model="valoreScontoParziale" :disabled="!scontoParziale" style="margin-left:10px;width:70px;" placeholder="%" />
             </div>
-            <div class="checkbox-row">
-                <label for="note-ordine">Note ordine</label>
-                <input type="text" id="note-ordine" v-model="noteOrdine" style="flex:1;margin-left:10px;" placeholder="Scrivi una nota..." />
+            <div class="checkbox-row" v-for="(prodotto, index) in scontrino" :key="index">
+                <label :for="'note-prodotto-' + index">Nota per {{ prodotto.nome }}</label>
+                <input type="text" :id="'note-prodotto-' + index" v-model="noteProdottiArray[index]" style="flex:1;margin-left:10px;" placeholder="Scrivi una nota per questo prodotto..." />
             </div>
             <div class="modal-actions">
                 <button @click="closeOption">Annulla</button>
