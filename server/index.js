@@ -518,6 +518,911 @@ app.get('/create-db', (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+// Funzione per generare comandi ESC/POS
+function generateEscPosContent(receiptContent) { // ho rinominato 'text' in 'receiptContent' per chiarezza
+    let escPosBytes = [];
+
+    // 1. Inizializza la stampante (resettando le impostazioni) - Buona pratica per iniziare puliti.
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('@'.charCodeAt(0)); // @
+
+    // 2. Imposta la Code Page per il simbolo Euro
+    console.log("Configurazione per simbolo Euro.");
+    // Comando per abilitare il simbolo Euro: 1f 1b 10 12 12 01 (HEX)
+    // Questo è il comando specifico Munbyn ITPP068USE per attivare il simbolo dell'euro.
+    escPosBytes.push(0x1F, 0x1B, 0x10, 0x12, 0x12, 0x01);
+    // Comando per selezionare la Code Page 2 (CP858) - Munbyn spesso la associa all'euro.
+    // Prova con 0x02. Se non funziona, prova con 0x00 (CP437, spesso \xDD) o 0x10 (CP1252, spesso \x80).
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('t'.charCodeAt(0)); // t
+    escPosBytes.push(0x10); // Code Page 2 (HEX: \x02, corrisponde a CP858)
+
+    const lines = receiptContent.split('\n');
+
+    lines.forEach(line => {
+        let processedLine = line;
+
+        // Sostituisci i comandi testuali come [COMANDO:CENTRA] con le sequenze ESC/POS corrette
+        for (const [commandName, escPosSequence] of Object.entries(ESC_POS_COMMANDS)) {
+            const commandPlaceholder = `[COMANDO:${commandName}]`;
+            processedLine = processedLine.split(commandPlaceholder).join(escPosSequence);
+        }
+
+        // Gestione del simbolo Euro (€): Sostituisci il simbolo testuale con il byte corretto
+        // '\xD5' è il byte per l'Euro in Code Page 858.
+        // Se non funziona con 0x02 e \xD5, prova a cambiare 0x02 a 0x00 e \xD5 a \xDD,
+        // o 0x02 a 0x10 e \xD5 a \x80 (ma \xD5 con 0x02 è il più probabile per Munbyn).
+        processedLine = processedLine.replace(/€/g, '\x80');
+
+        // Converti la riga processata in un array di byte ASCII (o della Code Page selezionata)
+        // Questo ciclo itera su ogni carattere della stringa e lo aggiunge come singolo byte.
+        for (let i = 0; i < processedLine.length; i++) {
+            escPosBytes.push(processedLine.charCodeAt(i));
+        }
+
+        // Aggiungi un Line Feed (ritorno a capo) alla fine di ogni riga
+        escPosBytes.push('\x0A'.charCodeAt(0)); // Line Feed (LF)
+    });
+
+    // Ritorna un Buffer di byte. Questo è CRUCIALE per inviare dati raw alla stampante.
+    return Buffer.from(escPosBytes);
+}
+
+async function getLogoEscPosBuffer(logoPath) {
+    try {
+        // Converte il logo in PNG monocromatico, larghezza max 384px (compatibile con la maggior parte delle termiche)
+        const image = await sharp(logoPath)
+            .resize({ width: 384 })
+            .threshold(128)
+            .png()
+            .toBuffer();
+        // Leggi i byte PNG
+        const PNG = require('pngjs').PNG;
+        const png = PNG.sync.read(image);
+        const width = png.width;
+        const height = png.height;
+        const bytesPerLine = Math.ceil(width / 8);
+        let escpos = Buffer.alloc(0);
+        for (let y = 0; y < height; y++) {
+            let line = Buffer.alloc(bytesPerLine);
+            for (let x = 0; x < width; x++) {
+                const idx = (width * y + x) << 2;
+                // Conversione RGB -> bianco/nero
+                const r = png.data[idx];
+                const g = png.data[idx + 1];
+                const b = png.data[idx + 2];
+                // Calcolo luminosità media
+                const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+                if (lum < 128) {
+                    line[Math.floor(x / 8)] |= (0x80 >> (x % 8));
+                }
+            }
+            escpos = Buffer.concat([escpos, line]);
+        }
+        // Comando ESC/POS GS v 0
+        const header = Buffer.from([
+            0x1D, 0x76, 0x30, 0x00,
+            bytesPerLine & 0xFF,
+            (bytesPerLine >> 8) & 0xFF,
+            height & 0xFF,
+            (height >> 8) & 0xFF
+        ]);
+        return Buffer.concat([header, escpos]);
+    } catch (e) {
+        console.error('Errore generazione buffer logo ESC/POS:', e);
+        return Buffer.alloc(0);
+    }
+}
+
+// API per la gestione della stampante
+app.get('/stampanti', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        res.json(printers);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/seleziona-stampante', (req, res) => {
+    const { printerName } = req.body;
+    if (!printerName) {
+        return res.status(400).json({ error: 'Nome stampante mancante' });
+    }
+    setSelectedPrinter(printerName);
+    res.json({ success: true });
+});
+
+app.post('/stampa', async (req, res) => {
+    try {
+        const { testo } = req.body;
+        if (!testo) {
+            return res.status(400).json({ error: 'Testo mancante' });
+        }
+
+        // Usa stampante selezionata o predefinita
+        let printerName = getSelectedPrinter();
+        if (!printerName) {
+            printerName = getDefaultPrinter();
+            if (printerName) setSelectedPrinter(printerName);
+        }
+
+        if (!printerName) {
+            return res.status(400).json({ error: 'Nessuna stampante disponibile' });
+        }
+
+        const content = generateEscPosContent(testo);
+        await printWithPrinter(printerName, content);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Errore stampa:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-stato', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        const printersAvailable = printers.length > 0;
+        res.json({
+            selected: !!getSelectedPrinter(),
+            printersAvailable
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-selezionata', (req, res) => {
+    const selected = getSelectedPrinter();
+    if (!selected) {
+        return res.status(404).json({ error: 'Nessuna stampante selezionata' });
+    }
+    res.json({ printer: selected });
+});
+
+app.get('/set-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    currentDbName = dbName;
+    db = openDb(currentDbName);
+    res.json({ success: true });
+});
+
+app.get('/create-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    try {
+        openDb(dbName); // crea se non esiste
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+// Funzione per generare comandi ESC/POS
+function generateEscPosContent(receiptContent) { // ho rinominato 'text' in 'receiptContent' per chiarezza
+    let escPosBytes = [];
+
+    // 1. Inizializza la stampante (resettando le impostazioni) - Buona pratica per iniziare puliti.
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('@'.charCodeAt(0)); // @
+
+    // 2. Imposta la Code Page per il simbolo Euro
+    console.log("Configurazione per simbolo Euro.");
+    // Comando per abilitare il simbolo Euro: 1f 1b 10 12 12 01 (HEX)
+    // Questo è il comando specifico Munbyn ITPP068USE per attivare il simbolo dell'euro.
+    escPosBytes.push(0x1F, 0x1B, 0x10, 0x12, 0x12, 0x01);
+    // Comando per selezionare la Code Page 2 (CP858) - Munbyn spesso la associa all'euro.
+    // Prova con 0x02. Se non funziona, prova con 0x00 (CP437, spesso \xDD) o 0x10 (CP1252, spesso \x80).
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('t'.charCodeAt(0)); // t
+    escPosBytes.push(0x10); // Code Page 2 (HEX: \x02, corrisponde a CP858)
+
+    const lines = receiptContent.split('\n');
+
+    lines.forEach(line => {
+        let processedLine = line;
+
+        // Sostituisci i comandi testuali come [COMANDO:CENTRA] con le sequenze ESC/POS corrette
+        for (const [commandName, escPosSequence] of Object.entries(ESC_POS_COMMANDS)) {
+            const commandPlaceholder = `[COMANDO:${commandName}]`;
+            processedLine = processedLine.split(commandPlaceholder).join(escPosSequence);
+        }
+
+        // Gestione del simbolo Euro (€): Sostituisci il simbolo testuale con il byte corretto
+        // '\xD5' è il byte per l'Euro in Code Page 858.
+        // Se non funziona con 0x02 e \xD5, prova a cambiare 0x02 a 0x00 e \xD5 a \xDD,
+        // o 0x02 a 0x10 e \xD5 a \x80 (ma \xD5 con 0x02 è il più probabile per Munbyn).
+        processedLine = processedLine.replace(/€/g, '\x80');
+
+        // Converti la riga processata in un array di byte ASCII (o della Code Page selezionata)
+        // Questo ciclo itera su ogni carattere della stringa e lo aggiunge come singolo byte.
+        for (let i = 0; i < processedLine.length; i++) {
+            escPosBytes.push(processedLine.charCodeAt(i));
+        }
+
+        // Aggiungi un Line Feed (ritorno a capo) alla fine di ogni riga
+        escPosBytes.push('\x0A'.charCodeAt(0)); // Line Feed (LF)
+    });
+
+    // Ritorna un Buffer di byte. Questo è CRUCIALE per inviare dati raw alla stampante.
+    return Buffer.from(escPosBytes);
+}
+
+async function getLogoEscPosBuffer(logoPath) {
+    try {
+        // Converte il logo in PNG monocromatico, larghezza max 384px (compatibile con la maggior parte delle termiche)
+        const image = await sharp(logoPath)
+            .resize({ width: 384 })
+            .threshold(128)
+            .png()
+            .toBuffer();
+        // Leggi i byte PNG
+        const PNG = require('pngjs').PNG;
+        const png = PNG.sync.read(image);
+        const width = png.width;
+        const height = png.height;
+        const bytesPerLine = Math.ceil(width / 8);
+        let escpos = Buffer.alloc(0);
+        for (let y = 0; y < height; y++) {
+            let line = Buffer.alloc(bytesPerLine);
+            for (let x = 0; x < width; x++) {
+                const idx = (width * y + x) << 2;
+                // Conversione RGB -> bianco/nero
+                const r = png.data[idx];
+                const g = png.data[idx + 1];
+                const b = png.data[idx + 2];
+                // Calcolo luminosità media
+                const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+                if (lum < 128) {
+                    line[Math.floor(x / 8)] |= (0x80 >> (x % 8));
+                }
+            }
+            escpos = Buffer.concat([escpos, line]);
+        }
+        // Comando ESC/POS GS v 0
+        const header = Buffer.from([
+            0x1D, 0x76, 0x30, 0x00,
+            bytesPerLine & 0xFF,
+            (bytesPerLine >> 8) & 0xFF,
+            height & 0xFF,
+            (height >> 8) & 0xFF
+        ]);
+        return Buffer.concat([header, escpos]);
+    } catch (e) {
+        console.error('Errore generazione buffer logo ESC/POS:', e);
+        return Buffer.alloc(0);
+    }
+}
+
+// API per la gestione della stampante
+app.get('/stampanti', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        res.json(printers);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/seleziona-stampante', (req, res) => {
+    const { printerName } = req.body;
+    if (!printerName) {
+        return res.status(400).json({ error: 'Nome stampante mancante' });
+    }
+    setSelectedPrinter(printerName);
+    res.json({ success: true });
+});
+
+app.post('/stampa', async (req, res) => {
+    try {
+        const { testo } = req.body;
+        if (!testo) {
+            return res.status(400).json({ error: 'Testo mancante' });
+        }
+
+        // Usa stampante selezionata o predefinita
+        let printerName = getSelectedPrinter();
+        if (!printerName) {
+            printerName = getDefaultPrinter();
+            if (printerName) setSelectedPrinter(printerName);
+        }
+
+        if (!printerName) {
+            return res.status(400).json({ error: 'Nessuna stampante disponibile' });
+        }
+
+        const content = generateEscPosContent(testo);
+        await printWithPrinter(printerName, content);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Errore stampa:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-stato', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        const printersAvailable = printers.length > 0;
+        res.json({
+            selected: !!getSelectedPrinter(),
+            printersAvailable
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-selezionata', (req, res) => {
+    const selected = getSelectedPrinter();
+    if (!selected) {
+        return res.status(404).json({ error: 'Nessuna stampante selezionata' });
+    }
+    res.json({ printer: selected });
+});
+
+app.get('/set-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    currentDbName = dbName;
+    db = openDb(currentDbName);
+    res.json({ success: true });
+});
+
+app.get('/create-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    try {
+        openDb(dbName); // crea se non esiste
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+// Funzione per generare comandi ESC/POS
+function generateEscPosContent(receiptContent) { // ho rinominato 'text' in 'receiptContent' per chiarezza
+    let escPosBytes = [];
+
+    // 1. Inizializza la stampante (resettando le impostazioni) - Buona pratica per iniziare puliti.
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('@'.charCodeAt(0)); // @
+
+    // 2. Imposta la Code Page per il simbolo Euro
+    console.log("Configurazione per simbolo Euro.");
+    // Comando per abilitare il simbolo Euro: 1f 1b 10 12 12 01 (HEX)
+    // Questo è il comando specifico Munbyn ITPP068USE per attivare il simbolo dell'euro.
+    escPosBytes.push(0x1F, 0x1B, 0x10, 0x12, 0x12, 0x01);
+    // Comando per selezionare la Code Page 2 (CP858) - Munbyn spesso la associa all'euro.
+    // Prova con 0x02. Se non funziona, prova con 0x00 (CP437, spesso \xDD) o 0x10 (CP1252, spesso \x80).
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('t'.charCodeAt(0)); // t
+    escPosBytes.push(0x10); // Code Page 2 (HEX: \x02, corrisponde a CP858)
+
+    const lines = receiptContent.split('\n');
+
+    lines.forEach(line => {
+        let processedLine = line;
+
+        // Sostituisci i comandi testuali come [COMANDO:CENTRA] con le sequenze ESC/POS corrette
+        for (const [commandName, escPosSequence] of Object.entries(ESC_POS_COMMANDS)) {
+            const commandPlaceholder = `[COMANDO:${commandName}]`;
+            processedLine = processedLine.split(commandPlaceholder).join(escPosSequence);
+        }
+
+        // Gestione del simbolo Euro (€): Sostituisci il simbolo testuale con il byte corretto
+        // '\xD5' è il byte per l'Euro in Code Page 858.
+        // Se non funziona con 0x02 e \xD5, prova a cambiare 0x02 a 0x00 e \xD5 a \xDD,
+        // o 0x02 a 0x10 e \xD5 a \x80 (ma \xD5 con 0x02 è il più probabile per Munbyn).
+        processedLine = processedLine.replace(/€/g, '\x80');
+
+        // Converti la riga processata in un array di byte ASCII (o della Code Page selezionata)
+        // Questo ciclo itera su ogni carattere della stringa e lo aggiunge come singolo byte.
+        for (let i = 0; i < processedLine.length; i++) {
+            escPosBytes.push(processedLine.charCodeAt(i));
+        }
+
+        // Aggiungi un Line Feed (ritorno a capo) alla fine di ogni riga
+        escPosBytes.push('\x0A'.charCodeAt(0)); // Line Feed (LF)
+    });
+
+    // Ritorna un Buffer di byte. Questo è CRUCIALE per inviare dati raw alla stampante.
+    return Buffer.from(escPosBytes);
+}
+
+async function getLogoEscPosBuffer(logoPath) {
+    try {
+        // Converte il logo in PNG monocromatico, larghezza max 384px (compatibile con la maggior parte delle termiche)
+        const image = await sharp(logoPath)
+            .resize({ width: 384 })
+            .threshold(128)
+            .png()
+            .toBuffer();
+        // Leggi i byte PNG
+        const PNG = require('pngjs').PNG;
+        const png = PNG.sync.read(image);
+        const width = png.width;
+        const height = png.height;
+        const bytesPerLine = Math.ceil(width / 8);
+        let escpos = Buffer.alloc(0);
+        for (let y = 0; y < height; y++) {
+            let line = Buffer.alloc(bytesPerLine);
+            for (let x = 0; x < width; x++) {
+                const idx = (width * y + x) << 2;
+                // Conversione RGB -> bianco/nero
+                const r = png.data[idx];
+                const g = png.data[idx + 1];
+                const b = png.data[idx + 2];
+                // Calcolo luminosità media
+                const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+                if (lum < 128) {
+                    line[Math.floor(x / 8)] |= (0x80 >> (x % 8));
+                }
+            }
+            escpos = Buffer.concat([escpos, line]);
+        }
+        // Comando ESC/POS GS v 0
+        const header = Buffer.from([
+            0x1D, 0x76, 0x30, 0x00,
+            bytesPerLine & 0xFF,
+            (bytesPerLine >> 8) & 0xFF,
+            height & 0xFF,
+            (height >> 8) & 0xFF
+        ]);
+        return Buffer.concat([header, escpos]);
+    } catch (e) {
+        console.error('Errore generazione buffer logo ESC/POS:', e);
+        return Buffer.alloc(0);
+    }
+}
+
+// API per la gestione della stampante
+app.get('/stampanti', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        res.json(printers);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/seleziona-stampante', (req, res) => {
+    const { printerName } = req.body;
+    if (!printerName) {
+        return res.status(400).json({ error: 'Nome stampante mancante' });
+    }
+    setSelectedPrinter(printerName);
+    res.json({ success: true });
+});
+
+app.post('/stampa', async (req, res) => {
+    try {
+        const { testo } = req.body;
+        if (!testo) {
+            return res.status(400).json({ error: 'Testo mancante' });
+        }
+
+        // Usa stampante selezionata o predefinita
+        let printerName = getSelectedPrinter();
+        if (!printerName) {
+            printerName = getDefaultPrinter();
+            if (printerName) setSelectedPrinter(printerName);
+        }
+
+        if (!printerName) {
+            return res.status(400).json({ error: 'Nessuna stampante disponibile' });
+        }
+
+        const content = generateEscPosContent(testo);
+        await printWithPrinter(printerName, content);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Errore stampa:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-stato', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        const printersAvailable = printers.length > 0;
+        res.json({
+            selected: !!getSelectedPrinter(),
+            printersAvailable
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-selezionata', (req, res) => {
+    const selected = getSelectedPrinter();
+    if (!selected) {
+        return res.status(404).json({ error: 'Nessuna stampante selezionata' });
+    }
+    res.json({ printer: selected });
+});
+
+app.get('/set-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    currentDbName = dbName;
+    db = openDb(currentDbName);
+    res.json({ success: true });
+});
+
+app.get('/create-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    try {
+        openDb(dbName); // crea se non esiste
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+// Funzione per generare comandi ESC/POS
+function generateEscPosContent(receiptContent) { // ho rinominato 'text' in 'receiptContent' per chiarezza
+    let escPosBytes = [];
+
+    // 1. Inizializza la stampante (resettando le impostazioni) - Buona pratica per iniziare puliti.
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('@'.charCodeAt(0)); // @
+
+    // 2. Imposta la Code Page per il simbolo Euro
+    console.log("Configurazione per simbolo Euro.");
+    // Comando per abilitare il simbolo Euro: 1f 1b 10 12 12 01 (HEX)
+    // Questo è il comando specifico Munbyn ITPP068USE per attivare il simbolo dell'euro.
+    escPosBytes.push(0x1F, 0x1B, 0x10, 0x12, 0x12, 0x01);
+    // Comando per selezionare la Code Page 2 (CP858) - Munbyn spesso la associa all'euro.
+    // Prova con 0x02. Se non funziona, prova con 0x00 (CP437, spesso \xDD) o 0x10 (CP1252, spesso \x80).
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('t'.charCodeAt(0)); // t
+    escPosBytes.push(0x10); // Code Page 2 (HEX: \x02, corrisponde a CP858)
+
+    const lines = receiptContent.split('\n');
+
+    lines.forEach(line => {
+        let processedLine = line;
+
+        // Sostituisci i comandi testuali come [COMANDO:CENTRA] con le sequenze ESC/POS corrette
+        for (const [commandName, escPosSequence] of Object.entries(ESC_POS_COMMANDS)) {
+            const commandPlaceholder = `[COMANDO:${commandName}]`;
+            processedLine = processedLine.split(commandPlaceholder).join(escPosSequence);
+        }
+
+        // Gestione del simbolo Euro (€): Sostituisci il simbolo testuale con il byte corretto
+        // '\xD5' è il byte per l'Euro in Code Page 858.
+        // Se non funziona con 0x02 e \xD5, prova a cambiare 0x02 a 0x00 e \xD5 a \xDD,
+        // o 0x02 a 0x10 e \xD5 a \x80 (ma \xD5 con 0x02 è il più probabile per Munbyn).
+        processedLine = processedLine.replace(/€/g, '\x80');
+
+        // Converti la riga processata in un array di byte ASCII (o della Code Page selezionata)
+        // Questo ciclo itera su ogni carattere della stringa e lo aggiunge come singolo byte.
+        for (let i = 0; i < processedLine.length; i++) {
+            escPosBytes.push(processedLine.charCodeAt(i));
+        }
+
+        // Aggiungi un Line Feed (ritorno a capo) alla fine di ogni riga
+        escPosBytes.push('\x0A'.charCodeAt(0)); // Line Feed (LF)
+    });
+
+    // Ritorna un Buffer di byte. Questo è CRUCIALE per inviare dati raw alla stampante.
+    return Buffer.from(escPosBytes);
+}
+
+async function getLogoEscPosBuffer(logoPath) {
+    try {
+        // Converte il logo in PNG monocromatico, larghezza max 384px (compatibile con la maggior parte delle termiche)
+        const image = await sharp(logoPath)
+            .resize({ width: 384 })
+            .threshold(128)
+            .png()
+            .toBuffer();
+        // Leggi i byte PNG
+        const PNG = require('pngjs').PNG;
+        const png = PNG.sync.read(image);
+        const width = png.width;
+        const height = png.height;
+        const bytesPerLine = Math.ceil(width / 8);
+        let escpos = Buffer.alloc(0);
+        for (let y = 0; y < height; y++) {
+            let line = Buffer.alloc(bytesPerLine);
+            for (let x = 0; x < width; x++) {
+                const idx = (width * y + x) << 2;
+                // Conversione RGB -> bianco/nero
+                const r = png.data[idx];
+                const g = png.data[idx + 1];
+                const b = png.data[idx + 2];
+                // Calcolo luminosità media
+                const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+                if (lum < 128) {
+                    line[Math.floor(x / 8)] |= (0x80 >> (x % 8));
+                }
+            }
+            escpos = Buffer.concat([escpos, line]);
+        }
+        // Comando ESC/POS GS v 0
+        const header = Buffer.from([
+            0x1D, 0x76, 0x30, 0x00,
+            bytesPerLine & 0xFF,
+            (bytesPerLine >> 8) & 0xFF,
+            height & 0xFF,
+            (height >> 8) & 0xFF
+        ]);
+        return Buffer.concat([header, escpos]);
+    } catch (e) {
+        console.error('Errore generazione buffer logo ESC/POS:', e);
+        return Buffer.alloc(0);
+    }
+}
+
+// API per la gestione della stampante
+app.get('/stampanti', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        res.json(printers);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/seleziona-stampante', (req, res) => {
+    const { printerName } = req.body;
+    if (!printerName) {
+        return res.status(400).json({ error: 'Nome stampante mancante' });
+    }
+    setSelectedPrinter(printerName);
+    res.json({ success: true });
+});
+
+app.post('/stampa', async (req, res) => {
+    try {
+        const { testo } = req.body;
+        if (!testo) {
+            return res.status(400).json({ error: 'Testo mancante' });
+        }
+
+        // Usa stampante selezionata o predefinita
+        let printerName = getSelectedPrinter();
+        if (!printerName) {
+            printerName = getDefaultPrinter();
+            if (printerName) setSelectedPrinter(printerName);
+        }
+
+        if (!printerName) {
+            return res.status(400).json({ error: 'Nessuna stampante disponibile' });
+        }
+
+        const content = generateEscPosContent(testo);
+        await printWithPrinter(printerName, content);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Errore stampa:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-stato', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        const printersAvailable = printers.length > 0;
+        res.json({
+            selected: !!getSelectedPrinter(),
+            printersAvailable
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-selezionata', (req, res) => {
+    const selected = getSelectedPrinter();
+    if (!selected) {
+        return res.status(404).json({ error: 'Nessuna stampante selezionata' });
+    }
+    res.json({ printer: selected });
+});
+
+app.get('/set-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    currentDbName = dbName;
+    db = openDb(currentDbName);
+    res.json({ success: true });
+});
+
+app.get('/create-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    try {
+        openDb(dbName); // crea se non esiste
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+// Funzione per generare comandi ESC/POS
+function generateEscPosContent(receiptContent) { // ho rinominato 'text' in 'receiptContent' per chiarezza
+    let escPosBytes = [];
+
+    // 1. Inizializza la stampante (resettando le impostazioni) - Buona pratica per iniziare puliti.
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('@'.charCodeAt(0)); // @
+
+    // 2. Imposta la Code Page per il simbolo Euro
+    console.log("Configurazione per simbolo Euro.");
+    // Comando per abilitare il simbolo Euro: 1f 1b 10 12 12 01 (HEX)
+    // Questo è il comando specifico Munbyn ITPP068USE per attivare il simbolo dell'euro.
+    escPosBytes.push(0x1F, 0x1B, 0x10, 0x12, 0x12, 0x01);
+    // Comando per selezionare la Code Page 2 (CP858) - Munbyn spesso la associa all'euro.
+    // Prova con 0x02. Se non funziona, prova con 0x00 (CP437, spesso \xDD) o 0x10 (CP1252, spesso \x80).
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('t'.charCodeAt(0)); // t
+    escPosBytes.push(0x10); // Code Page 2 (HEX: \x02, corrisponde a CP858)
+
+    const lines = receiptContent.split('\n');
+
+    lines.forEach(line => {
+        let processedLine = line;
+
+        // Sostituisci i comandi testuali come [COMANDO:CENTRA] con le sequenze ESC/POS corrette
+        for (const [commandName, escPosSequence] of Object.entries(ESC_POS_COMMANDS)) {
+            const commandPlaceholder = `[COMANDO:${commandName}]`;
+            processedLine = processedLine.split(commandPlaceholder).join(escPosSequence);
+        }
+
+        // Gestione del simbolo Euro (€): Sostituisci il simbolo testuale con il byte corretto
+        // '\xD5' è il byte per l'Euro in Code Page 858.
+        // Se non funziona con 0x02 e \xD5, prova a cambiare 0x02 a 0x00 e \xD5 a \xDD,
+        // o 0x02 a 0x10 e \xD5 a \x80 (ma \xD5 con 0x02 è il più probabile per Munbyn).
+        processedLine = processedLine.replace(/€/g, '\x80');
+
+        // Converti la riga processata in un array di byte ASCII (o della Code Page selezionata)
+        // Questo ciclo itera su ogni carattere della stringa e lo aggiunge come singolo byte.
+        for (let i = 0; i < processedLine.length; i++) {
+            escPosBytes.push(processedLine.charCodeAt(i));
+        }
+
+        // Aggiungi un Line Feed (ritorno a capo) alla fine di ogni riga
+        escPosBytes.push('\x0A'.charCodeAt(0)); // Line Feed (LF)
+    });
+
+    // Ritorna un Buffer di byte. Questo è CRUCIALE per inviare dati raw alla stampante.
+    return Buffer.from(escPosBytes);
+}
+
+async function getLogoEscPosBuffer(logoPath) {
+    try {
+        // Converte il logo in PNG monocromatico, larghezza max 384px (compatibile con la maggior parte delle termiche)
+        const image = await sharp(logoPath)
+            .resize({ width: 384 })
+            .threshold(128)
+            .png()
+            .toBuffer();
+        // Leggi i byte PNG
+        const PNG = require('pngjs').PNG;
+        const png = PNG.sync.read(image);
+        const width = png.width;
+        const height = png.height;
+        const bytesPerLine = Math.ceil(width / 8);
+        let escpos = Buffer.alloc(0);
+        for (let y = 0; y < height; y++) {
+            let line = Buffer.alloc(bytesPerLine);
+            for (let x = 0; x < width; x++) {
+                const idx = (width * y + x) << 2;
+                // Conversione RGB -> bianco/nero
+                const r = png.data[idx];
+                const g = png.data[idx + 1];
+                const b = png.data[idx + 2];
+                // Calcolo luminosità media
+                const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+                if (lum < 128) {
+                    line[Math.floor(x / 8)] |= (0x80 >> (x % 8));
+                }
+            }
+            escpos = Buffer.concat([escpos, line]);
+        }
+        // Comando ESC/POS GS v 0
+        const header = Buffer.from([
+            0x1D, 0x76, 0x30, 0x00,
+            bytesPerLine & 0xFF,
+            (bytesPerLine >> 8) & 0xFF,
+            height & 0xFF,
+            (height >> 8) & 0xFF
+        ]);
+        return Buffer.concat([header, escpos]);
+    } catch (e) {
+        console.error('Errore generazione buffer logo ESC/POS:', e);
+        return Buffer.alloc(0);
+    }
+}
+
+// API per la gestione della stampante
+app.get('/stampanti', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        res.json(printers);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/seleziona-stampante', (req, res) => {
+    const { printerName } = req.body;
+    if (!printerName) {
+        return res.status(400).json({ error: 'Nome stampante mancante' });
+    }
+    setSelectedPrinter(printerName);
+    res.json({ success: true });
+});
+
+app.post('/stampa', async (req, res) => {
+    try {
+        const { testo } = req.body;
+        if (!testo) {
+            return res.status(400).json({ error: 'Testo mancante' });
+        }
+
+        // Usa stampante selezionata o predefinita
+        let printerName = getSelectedPrinter();
+        if (!printerName) {
+            printerName = getDefaultPrinter();
+            if (printerName) setSelectedPrinter(printerName);
+        }
+
+        if (!printerName) {
+            return res.status(400).json({ error: 'Nessuna stampante disponibile' });
+        }
+
+        const content = generateEscPosContent(testo);
+        await printWithPrinter(printerName, content);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Errore stampa:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-stato', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        const printersAvailable = printers.length > 0;
+        res.json({
+            selected: !!getSelectedPrinter(),
+            printersAvailable
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-selezionata', (req, res) => {
+    const selected = getSelectedPrinter();
+    if (!selected) {
+        return res.status(404).json({ error: 'Nessuna stampante selezionata' });
+    }
+    res.json({ printer: selected });
+});
+
+app.get('/set-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    currentDbName = dbName;
+    db = openDb(currentDbName);
+    res.json({ success: true });
+});
+
+app.get('/create-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    try {
+        openDb(dbName); // crea se non esiste
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 // ================== FINE SISTEMA DI STAMPA ==================
 
@@ -770,6 +1675,8 @@ io.on('connection', socket => {
         scontrino.push('[COMANDO:TESTO_NORMALE]'); // Assicurati che il testo successivo sia normale
         scontrino.push(`[COMANDO:CENTRA][COMANDO:TESTO_GRANDE][COMANDO:FONT_A][COMANDO:SOTTOLINEATO]${datiOrdine.sottotitoloAzienda}[COMANDO:SOTTOLINEATO_OFF][COMANDO:TESTO_NORMALE]`);
         scontrino.push('');
+        // Imposta definitivamente l'allineamento a sinistra per il resto dello scontrino (data, intestazioni e prodotti)
+        scontrino.push('[COMANDO:ALLINEA_SINISTRA][COMANDO:TESTO_NORMALE]');
         scontrino.push(`Data: ${dataFormattata}`);
         scontrino.push(`Numero scontrino: [COMANDO:TESTO_GRANDE]${datiOrdine.numeroScontrino}[COMANDO:TESTO_NORMALE]`);
         scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
@@ -787,10 +1694,9 @@ io.on('connection', socket => {
         scontrino.push(...helpers.creaRigaColonne('Prodotto', 'N°', 'TOT', larghezzeColonne));
         scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
         datiOrdine.prodotti.forEach(p => {
-            // Nome prodotto: solo font grande (senza grassetto)
+            // Nome prodotto base senza comandi (evita di inquinare i calcoli di larghezza)
             let nomeProdotto = `${p.nome}`;
             let extra = '';
-            // Note e prezzo: font normale
             if (p.note && p.note.trim() !== "") {
                 extra += ` - ${p.note}`;
             }
@@ -798,11 +1704,15 @@ io.on('connection', socket => {
                 const prezzoUnitarioFormat = Number(p.prezzoUnitario || p.prezzo).toFixed(2);
                 extra += ` (€${prezzoUnitarioFormat} cad.)`;
             }
-            // Unisci tutto: nome grande + resto normale
             nomeProdotto = nomeProdotto.toUpperCase() + extra;
             const qta = p.quantita.toString();
             const totaleRiga = `€` + Number(p.totale).toFixed(2);
-            scontrino.push(...helpers.creaRigaColonne(nomeProdotto, qta, totaleRiga, larghezzeColonne));
+            const righeProd = helpers.creaRigaColonne(nomeProdotto, qta, totaleRiga, larghezzeColonne);
+            // Prefissa solo il comando di dimensione (allineamento già impostato prima dell'intestazione)
+            if (righeProd.length > 0) {
+                righeProd[0] = `[COMANDO:TESTO_MEDIO]` + righeProd[0];
+            }
+            scontrino.push(...righeProd);
         });
         scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
         // Inseriamo il simbolo € qui come carattere normale

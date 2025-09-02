@@ -37,7 +37,7 @@ function addToScontrino(prodotto) {
 .prodotto-pagina-cassa{
     width: auto;
     min-width: 150px;
-    min-height: 110px;
+    min-height: 60px;
     display: flex;
     flex-direction: column;
     border-radius: 20px;
