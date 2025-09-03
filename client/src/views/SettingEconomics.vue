@@ -118,8 +118,8 @@ function tornaIndietro() {
                     <tr v-for="(prodotto, id) in ultimoScontrinoVar" :key="id">
                         <td>{{ prodotto.nome }}</td>
                         <td>{{ prodotto.quantità }}</td>
-                        <td>€ {{ prodotto.totaleSingoloProdotto.toFixed(2) }}</td>
-                        <td>€ {{ prodotto.totalePrezzo.toFixed(2) }}</td>
+                        <td>€ {{ (prodotto.totaleSingoloProdotto ?? 0).toFixed(2) }}</td>
+                        <td>€ {{ (prodotto.totalePrezzo ?? 0).toFixed(2) }}</td>
                     </tr>
                     <tr class="totale"><td class="totale">Totale</td><td></td><td></td><td>{{totUltimoScontrino.toFixed(2)}}</td></tr>
                     </tbody>
@@ -164,8 +164,8 @@ function tornaIndietro() {
                                     >
                                         <td>{{ prodotto.nome }}</td>
                                         <td>{{ prodotto.quantità }}</td>
-                                        <td>€ {{ prodotto.totaleSingoloProdotto.toFixed(2) }}</td>
-                                        <td>€ {{ prodotto.totalePrezzo.toFixed(2) }}</td>
+                                        <td>€ {{ (prodotto.totaleSingoloProdotto ?? 0).toFixed(2) }}</td>
+                                        <td>€ {{ (prodotto.totalePrezzo ?? 0).toFixed(2) }}</td>
                                     </tr>
                                     </tbody>
                                 </table>

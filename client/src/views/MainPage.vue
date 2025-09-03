@@ -20,6 +20,11 @@ const deviceStore = useDeviceStore()
                     <button class="product">Impostazione Categorie</button>
                 </router-link>
             </div>
+            <div v-if="deviceStore.isServer" class="prodotto">
+                <router-link :to="{name: 'SettingReceipt'}" class="single-button">
+                    <button class="product">Impostazione Scontrino</button>
+                </router-link>
+            </div>
             <div v-if="deviceStore.isServer" class="saldo">
                 <router-link :to="{name: 'SettingEconomics'}" class="single-button">
                     <button class="button-mobile-device">Sezione Economica</button>

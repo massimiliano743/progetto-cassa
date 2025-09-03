@@ -12,6 +12,7 @@ const puppeteer = require('puppeteer');
 const { exec, execSync } = require('child_process');
 const os = require('os');
 const sharp = require('sharp');
+const multer = require('multer');
 
 const app = express()
 app.use(cors())
@@ -156,6 +157,187 @@ async function printWithPrinter(printerName, content) {
     }
 }
 
+// Funzione per generare comandi ESC/POS
+function generateEscPosContent(receiptContent) { // ho rinominato 'test' in 'receiptContent' per chiarezza
+    let escPosBytes = [];
+
+    // 1. Inizializza la stampante (resettando le impostazioni) - Buona pratica per iniziare puliti.
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('@'.charCodeAt(0)); // @
+
+    // 2. Imposta la Code Page per il simbolo Euro
+    console.log("Configurazione per simbolo Euro.");
+    // Comando per abilitare il simbolo Euro: 1f 1b 10 12 12 01 (HEX)
+    // Questo è il comando specifico Munbyn ITPP068USE per attivare il simbolo dell'euro.
+    escPosBytes.push(0x1F, 0x1B, 0x10, 0x12, 0x12, 0x01);
+    // Comando per selezionare la Code Page 2 (CP858) - Munbyn spesso la associa all'euro.
+    // Prova con 0x02. Se non funziona, prova con 0x00 (CP437, spesso \xDD) o 0x10 (CP1252, spesso \x80).
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('t'.charCodeAt(0)); // t
+    escPosBytes.push(0x10); // Code Page 2 (HEX: \x02, corrisponde a CP858)
+
+    const lines = receiptContent.split('\n');
+
+    lines.forEach(line => {
+        let processedLine = line;
+
+        // Sostituisci i comandi testuali come [COMANDO:CENTRA] con le sequenze ESC/POS corrette
+        for (const [commandName, escPosSequence] of Object.entries(ESC_POS_COMMANDS)) {
+            const commandPlaceholder = `[COMANDO:${commandName}]`;
+            processedLine = processedLine.split(commandPlaceholder).join(escPosSequence);
+        }
+
+        // Gestione del simbolo Euro (€): Sostituisci il simbolo testuale con il byte corretto
+        // '\xD5' è il byte per l'Euro in Code Page 858.
+        // Se non funziona con 0x02 e \xD5, prova a cambiare 0x02 a 0x00 e \xD5 a \xDD,
+        // o 0x02 a 0x10 e \xD5 a \x80 (ma \xD5 con 0x02 è il più probabile per Munbyn).
+        processedLine = processedLine.replace(/€/g, '\x80');
+
+        // Converti la riga processata in un array di byte ASCII (o della Code Page selezionata)
+        // Questo ciclo itera su ogni carattere della stringa e lo aggiunge come singolo byte.
+        for (let i = 0; i < processedLine.length; i++) {
+            escPosBytes.push(processedLine.charCodeAt(i));
+        }
+
+        // Aggiungi un Line Feed (ritorno a capo) alla fine di ogni riga
+        escPosBytes.push('\x0A'.charCodeAt(0)); // Line Feed (LF)
+    });
+
+    // Ritorna un Buffer di byte. Questo è CRUCIALE per inviare dati raw alla stampante.
+    return Buffer.from(escPosBytes);
+}
+
+async function getLogoEscPosBuffer(logoPath) {
+    try {
+        // Converte il logo in PNG monocromatico, larghezza max 384px (compatibile con la maggior parte delle termiche)
+        const image = await sharp(logoPath)
+            .resize({ width: 384 })
+            .threshold(128)
+            .png()
+            .toBuffer();
+        // Leggi i byte PNG
+        const PNG = require('pngjs').PNG;
+        const png = PNG.sync.read(image);
+        const width = png.width;
+        const height = png.height;
+        const bytesPerLine = Math.ceil(width / 8);
+        let escpos = Buffer.alloc(0);
+        for (let y = 0; y < height; y++) {
+            let line = Buffer.alloc(bytesPerLine);
+            for (let x = 0; x < width; x++) {
+                const idx = (width * y + x) << 2;
+                // Conversione RGB -> bianco/nero
+                const r = png.data[idx];
+                const g = png.data[idx + 1];
+                const b = png.data[idx + 2];
+                // Calcolo luminosità media
+                const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+                if (lum < 128) {
+                    line[Math.floor(x / 8)] |= (0x80 >> (x % 8));
+                }
+            }
+            escpos = Buffer.concat([escpos, line]);
+        }
+        // Comando ESC/POS GS v 0
+        const header = Buffer.from([
+            0x1D, 0x76, 0x30, 0x00,
+            bytesPerLine & 0xFF,
+            (bytesPerLine >> 8) & 0xFF,
+            height & 0xFF,
+            (height >> 8) & 0xFF
+        ]);
+        return Buffer.concat([header, escpos]);
+    } catch (e) {
+        console.error('Errore generazione buffer logo ESC/POS:', e);
+        return Buffer.alloc(0);
+    }
+}
+
+// API per la gestione della stampante
+app.get('/stampanti', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        res.json(printers);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/seleziona-stampante', (req, res) => {
+    const { printerName } = req.body;
+    if (!printerName) {
+        return res.status(400).json({ error: 'Nome stampante mancante' });
+    }
+    setSelectedPrinter(printerName);
+    res.json({ success: true });
+});
+
+app.post('/stampa', async (req, res) => {
+    try {
+        const { testo } = req.body;
+        if (!testo) {
+            return res.status(400).json({ error: 'Testo mancante' });
+        }
+
+        // Usa stampante selezionata o predefinita
+        let printerName = getSelectedPrinter();
+        if (!printerName) {
+            printerName = getDefaultPrinter();
+            if (printerName) setSelectedPrinter(printerName);
+        }
+
+        if (!printerName) {
+            return res.status(400).json({ error: 'Nessuna stampante disponibile' });
+        }
+
+        const content = generateEscPosContent(testo);
+        await printWithPrinter(printerName, content);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Errore stampa:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-stato', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        const printersAvailable = printers.length > 0;
+        res.json({
+            selected: !!getSelectedPrinter(),
+            printersAvailable
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-selezionata', (req, res) => {
+    const selected = getSelectedPrinter();
+    if (!selected) {
+        return res.status(404).json({ error: 'Nessuna stampante selezionata' });
+    }
+    res.json({ printer: selected });
+});
+
+app.get('/set-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    currentDbName = dbName;
+    db = openDb(currentDbName);
+    res.json({ success: true });
+});
+
+app.get('/create-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    try {
+        openDb(dbName); // crea se non esiste
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 // Funzione per generare comandi ESC/POS
 function generateEscPosContent(receiptContent) { // ho rinominato 'text' in 'receiptContent' per chiarezza
     let escPosBytes = [];
@@ -336,6 +518,217 @@ app.get('/create-db', (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+// Funzione per generare comandi ESC/POS
+function generateEscPosContent(receiptContent) { // ho rinominato 'text' in 'receiptContent' per chiarezza
+    let escPosBytes = [];
+
+    // 1. Inizializza la stampante (resettando le impostazioni) - Buona pratica per iniziare puliti.
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('@'.charCodeAt(0)); // @
+
+    // 2. Imposta la Code Page per il simbolo Euro
+    console.log("Configurazione per simbolo Euro.");
+    // Comando per abilitare il simbolo Euro: 1f 1b 10 12 12 01 (HEX)
+    // Questo è il comando specifico Munbyn ITPP068USE per attivare il simbolo dell'euro.
+    escPosBytes.push(0x1F, 0x1B, 0x10, 0x12, 0x12, 0x01);
+    // Comando per selezionare la Code Page 2 (CP858) - Munbyn spesso la associa all'euro.
+    // Prova con 0x02. Se non funziona, prova con 0x00 (CP437, spesso \xDD) o 0x10 (CP1252, spesso \x80).
+    escPosBytes.push(ESC.charCodeAt(0)); // ESC
+    escPosBytes.push('t'.charCodeAt(0)); // t
+    escPosBytes.push(0x10); // Code Page 2 (HEX: \x02, corrisponde a CP858)
+
+    const lines = receiptContent.split('\n');
+
+    lines.forEach(line => {
+        let processedLine = line;
+
+        // Sostituisci i comandi testuali come [COMANDO:CENTRA] con le sequenze ESC/POS corrette
+        for (const [commandName, escPosSequence] of Object.entries(ESC_POS_COMMANDS)) {
+            const commandPlaceholder = `[COMANDO:${commandName}]`;
+            processedLine = processedLine.split(commandPlaceholder).join(escPosSequence);
+        }
+
+        // Gestione del simbolo Euro (€): Sostituisci il simbolo testuale con il byte corretto
+        // '\xD5' è il byte per l'Euro in Code Page 858.
+        // Se non funziona con 0x02 e \xD5, prova a cambiare 0x02 a 0x00 e \xD5 a \xDD,
+        // o 0x02 a 0x10 e \xD5 a \x80 (ma \xD5 con 0x02 è il più probabile per Munbyn).
+        processedLine = processedLine.replace(/€/g, '\x80');
+
+        // Converti la riga processata in un array di byte ASCII (o della Code Page selezionata)
+        // Questo ciclo itera su ogni carattere della stringa e lo aggiunge come singolo byte.
+        for (let i = 0; i < processedLine.length; i++) {
+            escPosBytes.push(processedLine.charCodeAt(i));
+        }
+
+        // Aggiungi un Line Feed (ritorno a capo) alla fine di ogni riga
+        escPosBytes.push('\x0A'.charCodeAt(0)); // Line Feed (LF)
+    });
+
+    // Ritorna un Buffer di byte. Questo è CRUCIALE per inviare dati raw alla stampante.
+    return Buffer.from(escPosBytes);
+}
+
+async function getLogoEscPosBuffer(logoPath) {
+    try {
+        // Converte il logo in PNG monocromatico, larghezza max 384px (compatibile con la maggior parte delle termiche)
+        const image = await sharp(logoPath)
+            .resize({ width: 384 })
+            .threshold(128)
+            .png()
+            .toBuffer();
+        // Leggi i byte PNG
+        const PNG = require('pngjs').PNG;
+        const png = PNG.sync.read(image);
+        const width = png.width;
+        const height = png.height;
+        const bytesPerLine = Math.ceil(width / 8);
+        let escpos = Buffer.alloc(0);
+        for (let y = 0; y < height; y++) {
+            let line = Buffer.alloc(bytesPerLine);
+            for (let x = 0; x < width; x++) {
+                const idx = (width * y + x) << 2;
+                // Conversione RGB -> bianco/nero
+                const r = png.data[idx];
+                const g = png.data[idx + 1];
+                const b = png.data[idx + 2];
+                // Calcolo luminosità media
+                const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+                if (lum < 128) {
+                    line[Math.floor(x / 8)] |= (0x80 >> (x % 8));
+                }
+            }
+            escpos = Buffer.concat([escpos, line]);
+        }
+        // Comando ESC/POS GS v 0
+        const header = Buffer.from([
+            0x1D, 0x76, 0x30, 0x00,
+            bytesPerLine & 0xFF,
+            (bytesPerLine >> 8) & 0xFF,
+            height & 0xFF,
+            (height >> 8) & 0xFF
+        ]);
+        return Buffer.concat([header, escpos]);
+    } catch (e) {
+        console.error('Errore generazione buffer logo ESC/POS:', e);
+        return Buffer.alloc(0);
+    }
+}
+
+// API per la gestione della stampante
+app.get('/stampanti', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        res.json(printers);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/seleziona-stampante', (req, res) => {
+    const { printerName } = req.body;
+    if (!printerName) {
+        return res.status(400).json({ error: 'Nome stampante mancante' });
+    }
+    setSelectedPrinter(printerName);
+    res.json({ success: true });
+});
+
+app.post('/stampa', async (req, res) => {
+    try {
+        const { testo } = req.body;
+        if (!testo) {
+            return res.status(400).json({ error: 'Testo mancante' });
+        }
+
+        // Usa stampante selezionata o predefinita
+        let printerName = getSelectedPrinter();
+        if (!printerName) {
+            printerName = getDefaultPrinter();
+            if (printerName) setSelectedPrinter(printerName);
+        }
+
+        if (!printerName) {
+            return res.status(400).json({ error: 'Nessuna stampante disponibile' });
+        }
+
+        const content = generateEscPosContent(testo);
+        await printWithPrinter(printerName, content);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Errore stampa:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-stato', async (req, res) => {
+    try {
+        const printers = await getPrinterList();
+        const printersAvailable = printers.length > 0;
+        res.json({
+            selected: !!getSelectedPrinter(),
+            printersAvailable
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/stampante-selezionata', (req, res) => {
+    const selected = getSelectedPrinter();
+    if (!selected) {
+        return res.status(404).json({ error: 'Nessuna stampante selezionata' });
+    }
+    res.json({ printer: selected });
+});
+
+app.get('/set-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    currentDbName = dbName;
+    db = openDb(currentDbName);
+    res.json({ success: true });
+});
+
+app.get('/create-db', (req, res) => {
+    const dbName = req.query.dbName;
+    if (!dbName) return res.status(400).json({ error: 'Nome database mancante' });
+    try {
+        openDb(dbName); // crea se non esiste
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Configurazione Multer per upload immagini
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, path.join(__dirname, 'img'));
+    },
+    filename: function (req, file, cb) {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const timestamp = Date.now();
+        cb(null, `uploaded_${timestamp}${ext}`);
+    }
+});
+const upload = multer({
+    storage: storage,
+    fileFilter: function (req, file, cb) {
+        if (file.mimetype === 'image/png' || file.mimetype === 'image/jpeg') {
+            cb(null, true);
+        } else {
+            cb(new Error('Solo PNG o JPEG sono accettati.'));
+        }
+    }
+});
+
+// Endpoint per upload immagine
+app.post('/upload-image', upload.single('image'), (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'Nessun file caricato o formato non valido.' });
+    }
+    res.json({ message: 'Immagine caricata con successo!' });
 });
 
 // ================== FINE SISTEMA DI STAMPA ==================
@@ -589,6 +982,8 @@ io.on('connection', socket => {
         scontrino.push('[COMANDO:TESTO_NORMALE]'); // Assicurati che il testo successivo sia normale
         scontrino.push(`[COMANDO:CENTRA][COMANDO:TESTO_GRANDE][COMANDO:FONT_A][COMANDO:SOTTOLINEATO]${datiOrdine.sottotitoloAzienda}[COMANDO:SOTTOLINEATO_OFF][COMANDO:TESTO_NORMALE]`);
         scontrino.push('');
+        // Imposta definitivamente l'allineamento a sinistra per il resto dello scontrino (data, intestazioni e prodotti)
+        scontrino.push('[COMANDO:ALLINEA_SINISTRA][COMANDO:TESTO_NORMALE]');
         scontrino.push(`Data: ${dataFormattata}`);
         scontrino.push(`Numero scontrino: [COMANDO:TESTO_GRANDE]${datiOrdine.numeroScontrino}[COMANDO:TESTO_NORMALE]`);
         scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
@@ -606,16 +1001,25 @@ io.on('connection', socket => {
         scontrino.push(...helpers.creaRigaColonne('Prodotto', 'N°', 'TOT', larghezzeColonne));
         scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
         datiOrdine.prodotti.forEach(p => {
-            let nomeProdotto = p.nome;
-            if (p.quantita > 1) {
-                const prezzoUnitarioFormat = Number(p.prezzoUnitario).toFixed(2);
-                // Inseriamo il simbolo € qui come carattere normale
-                nomeProdotto += ` (€${prezzoUnitarioFormat} cad.)`;
+            // Nome prodotto base senza comandi (evita di inquinare i calcoli di larghezza)
+            let nomeProdotto = `${p.nome}`;
+            let extra = '';
+            if (p.note && p.note.trim() !== "") {
+                extra += ` - ${p.note}`;
             }
+            if (p.quantita > 1) {
+                const prezzoUnitarioFormat = Number(p.prezzoUnitario || p.prezzo).toFixed(2);
+                extra += ` (€${prezzoUnitarioFormat} cad.)`;
+            }
+            nomeProdotto = nomeProdotto.toUpperCase() + extra;
             const qta = p.quantita.toString();
-            // Inseriamo il simbolo € qui come carattere normale
             const totaleRiga = `€` + Number(p.totale).toFixed(2);
-            scontrino.push(...helpers.creaRigaColonne(nomeProdotto, qta, totaleRiga, larghezzeColonne));
+            const righeProd = helpers.creaRigaColonne(nomeProdotto, qta, totaleRiga, larghezzeColonne);
+            // Prefissa solo il comando di dimensione (allineamento già impostato prima dell'intestazione)
+            if (righeProd.length > 0) {
+                righeProd[0] = `[COMANDO:TESTO_MEDIO]` + righeProd[0];
+            }
+            scontrino.push(...righeProd);
         });
         scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
         // Inseriamo il simbolo € qui come carattere normale
@@ -673,10 +1077,12 @@ io.on('connection', socket => {
         io.emit('product-list', prodottiAggiornati);
 
         // 4. Salva l'ordine
+        // Serializza i prodotti come JSON per permettere la nota per ogni prodotto
+        const prodottiJson = JSON.stringify(order.prodotti);
         const stmt = db.prepare('INSERT INTO orders (uuid, recapOrdine, totale, timestamp, note) VALUES (?, ?, ?, ?, ?)');
         const info = stmt.run(
             String(order.uuid),
-            String(order.prodotti),
+            prodottiJson,
             order.totale,
             order.timestamp,
             order.note ? String(order.note).substring(0, 1000) : null
@@ -712,11 +1118,23 @@ io.on('connection', socket => {
             for (const order of ordersForAnalysis) {
                 const recap = order.recapOrdine;
                 if (!recap) continue;
-                const items = recap.split(',').map(i => i.trim()).filter(Boolean);
+
+                let items = [];
+                try {
+                    // Prova a parsare come JSON (nuovo formato)
+                    items = JSON.parse(recap);
+                } catch {
+                    // Fallback per vecchi ordini con formato stringa
+                    items = recap.split(',').map(i => i.trim()).filter(Boolean)
+                        .map(item => {
+                            const [id, prezzo] = item.split(':');
+                            return { id: id.trim(), prezzo: parseFloat(prezzo.trim()) };
+                        });
+                }
+
                 for (const item of items) {
-                    const [id, prezzo] = item.split(':');
-                    const idProdotto = id.trim();
-                    const prezzoFloat = parseFloat(prezzo);
+                    const idProdotto = String(item.id);
+                    const prezzoFloat = Number(item.prezzo);
                     if (!prodottiMap[idProdotto]) {
                         prodottiMap[idProdotto] = {
                             pezziVenduti: 0,
@@ -757,35 +1175,23 @@ io.on('connection', socket => {
 
                 // Impostazioni (modifica qui i tuoi dati)
                 const NOME_AZIENDA = currentDbName;
-                const SOTTOTITOLO_AZIENDA = '';
-                const CONFIG_STAMPANTE = { larghezzaCaratteri: 42 }; // 42 per rotoli 58mm, 56 per 80mm
+                const CONFIG_STAMPANTE = { larghezzaCaratteri: 42 };
 
-                // 1. Prepara i dati per la funzione avanzata
-                const prodottiPerScontrino = [];
+                // Raggruppa prodotti per categoria e prepara array con note
+                const prodotti = Array.isArray(order.prodotti) ? order.prodotti : [];
                 const prodottiPerCategoria = {};
-                Object.entries(counts).forEach(([id, count]) => {
-                    const p = db.prepare('SELECT nome, tipologia FROM prodotti WHERE id = ?').get(id);
-                    if (p) {
-                        // Calcola prezzo unitario medio e totale pagato
-                        const prezzi = prezziPagati[id] || [];
-                        const prezzoUnitario = prezzi.length > 0 ? prezzi.reduce((a,b) => a+b,0)/prezzi.length : 0;
-                        const totale = prezzi.reduce((a,b) => a+b,0);
-                        prodottiPerScontrino.push({
-                            nome: p.nome,
-                            quantita: count,
-                            prezzoUnitario: prezzoUnitario,
-                            totale: totale,
-                            tipologia: p.tipologia
-                        });
-                        // Raggruppa per categoria
-                        if (!prodottiPerCategoria[p.tipologia]) prodottiPerCategoria[p.tipologia] = [];
-                        prodottiPerCategoria[p.tipologia].push({
-                            nome: p.nome,
-                            quantita: count,
-                            prezzoUnitario: prezzoUnitario,
-                            totale: totale
-                        });
-                    }
+                prodotti.forEach(p => {
+                    // Recupera la categoria dal DB
+                    const prodDb = db.prepare('SELECT tipologia FROM prodotti WHERE id = ?').get(p.id);
+                    const tipologia = prodDb ? prodDb.tipologia : 'Senza categoria';
+                    if (!prodottiPerCategoria[tipologia]) prodottiPerCategoria[tipologia] = [];
+                    prodottiPerCategoria[tipologia].push({
+                        nome: p.nome,
+                        quantita: p.quantita,
+                        prezzo: p.prezzo,
+                        totale: Number(p.prezzo) * Number(p.quantita),
+                        note: p.note || ""
+                    });
                 });
 
                 // Recupera i nomi delle categorie
@@ -795,21 +1201,36 @@ io.on('connection', socket => {
                     categorieNomi[catId] = cat ? cat.name : `Categoria #${catId}`;
                 });
 
-                // --- Stampa scontrini per categoria + totale in un unico job ---
+                // Stampa scontrini per categoria
                 let bufferUnico = Buffer.alloc(0);
-                // Percorso logo
-                const logoPath = path.join(__dirname, 'img', 'logo.png');
+                // Scegli l'immagine da stampare: priorità a last_uploaded.png/jpg, altrimenti logo.png
+                let logoPath = null;
+                const imgDir = path.join(__dirname, 'img');
+                // Cerca l'ultima immagine caricata (uploaded_*.png/jpg)
+                const files = fs.readdirSync(imgDir)
+                    .filter(f => f.startsWith('uploaded_') && (f.endsWith('.png') || f.endsWith('.jpg')))
+                    .sort((a, b) => {
+                        // Ordina per timestamp decrescente
+                        const getTs = name => {
+                            const match = name.match(/uploaded_(\d+)/);
+                            return match ? parseInt(match[1]) : 0;
+                        };
+                        return getTs(b) - getTs(a);
+                    });
+                if (files.length > 0) {
+                    logoPath = path.join(imgDir, files[0]);
+                } else if (fs.existsSync(path.join(imgDir, 'logo.png'))) {
+                    logoPath = path.join(imgDir, 'logo.png');
+                }
                 let logoBuffer = Buffer.alloc(0);
                 try {
-                    if (fs.existsSync(logoPath)) {
+                    if (logoPath) {
                         logoBuffer = await getLogoEscPosBuffer(logoPath);
-                        // Aggiungi qualche line feed dopo il logo per separazione
                         logoBuffer = Buffer.concat([logoBuffer, Buffer.from([])]);
                     }
                 } catch (e) {
                     console.error('Errore caricamento logo:', e);
                 }
-                // Scontrini per categoria
                 for (const [catId, prodottiCat] of Object.entries(prodottiPerCategoria)) {
                     const datiScontrinoCat = {
                         numeroScontrino: info.lastInsertRowid,
@@ -817,32 +1238,36 @@ io.on('connection', socket => {
                         titoloAzienda: NOME_AZIENDA,
                         sottotitoloAzienda: categorieNomi[catId],
                         prodotti: prodottiCat,
-                        totaleOrdine: prodottiCat.reduce((acc, p) => acc + p.totale, 0),
-                        note: order.note || ''
+                        totaleOrdine: prodottiCat.reduce((acc, p) => acc + Number(p.totale), 0),
+                        note: ''
                     };
                     const receiptContentCat = generaScontrinoTermicoAvanzato(datiScontrinoCat, CONFIG_STAMPANTE);
                     const contentCat = generateEscPosContent(receiptContentCat);
                     bufferUnico = Buffer.concat([bufferUnico, logoBuffer, contentCat]);
                 }
-                // Scontrino totale
-                const datiScontrino = {
+                // Stampa anche lo scontrino riepilogativo dell'ordine
+                const datiScontrinoRiepilogo = {
                     numeroScontrino: info.lastInsertRowid,
                     dataOra: order.timestamp,
                     titoloAzienda: NOME_AZIENDA,
-                    sottotitoloAzienda: SOTTOTITOLO_AZIENDA,
-                    prodotti: prodottiPerScontrino,
-                    totaleOrdine: prodottiPerScontrino.reduce((acc, p) => acc + p.totale, 0),
+                    sottotitoloAzienda: 'Riepilogo Ordine',
+                    prodotti: prodotti.map(p => ({
+                        nome: p.nome,
+                        quantita: p.quantita,
+                        prezzo: p.prezzo,
+                        totale: Number(p.prezzo) * Number(p.quantita),
+                        note: p.note || ""
+                    })),
+                    totaleOrdine: order.totale,
                     note: order.note || ''
                 };
-                const receiptContent = generaScontrinoTermicoAvanzato(datiScontrino, CONFIG_STAMPANTE);
-                const content = generateEscPosContent(receiptContent);
-                // Aggiungi anche il totale al bufferUnico
-                bufferUnico = Buffer.concat([bufferUnico, logoBuffer, content]);
-                // Stampa tutto insieme
-                printWithPrinter(printerName, bufferUnico)
-                    .then(() => console.log('Stampa termica completata con layout avanzato (job unico).'))
-                    .catch(err => console.error('Errore stampa termica:', err));
+                const receiptContentRiepilogo = generaScontrinoTermicoAvanzato(datiScontrinoRiepilogo, CONFIG_STAMPANTE);
+                const contentRiepilogo = generateEscPosContent(receiptContentRiepilogo);
+                bufferUnico = Buffer.concat([bufferUnico, logoBuffer, contentRiepilogo]);
                 // --- FINE BLOCCO STAMPA AVANZATA ---
+                printWithPrinter(printerName, bufferUnico)
+                    .then(() => console.log('Stampa termica completata con layout avanzato (job per categoria).'))
+                    .catch(err => console.error('Errore stampa termica:', err));
             }
         } catch (e) {
             console.error('Errore generazione scontrino termico:', e);
@@ -863,14 +1288,28 @@ io.on('connection', socket => {
 
             const recap = order.recapOrdine;
             const productMap = {};
-            const entries = recap.split(',').map(p => p.trim()).filter(p => p);
-            entries.forEach(entry => {
-                const [productIdStr] = entry.split(':');
-                const productId = parseInt(productIdStr);
-                if (!isNaN(productId)) {
-                    productMap[productId] = (productMap[productId] || 0) + 1;
-                }
-            });
+
+            // Gestisce sia formato JSON che stringa
+            try {
+                // Prova a parsare come JSON (nuovo formato)
+                const items = JSON.parse(recap);
+                items.forEach(item => {
+                    const productId = parseInt(item.id);
+                    if (!isNaN(productId)) {
+                        productMap[productId] = (productMap[productId] || 0) + (item.quantita || 1);
+                    }
+                });
+            } catch {
+                // Fallback per vecchi ordini con formato stringa
+                const entries = recap.split(',').map(p => p.trim()).filter(p => p);
+                entries.forEach(entry => {
+                    const [productIdStr] = entry.split(':');
+                    const productId = parseInt(productIdStr);
+                    if (!isNaN(productId)) {
+                        productMap[productId] = (productMap[productId] || 0) + 1;
+                    }
+                });
+            }
 
             const update = db.prepare('UPDATE prodotti SET quantita = quantita + ? WHERE id = ?');
             const check = db.prepare('SELECT id FROM prodotti WHERE id = ?');
@@ -916,11 +1355,22 @@ io.on('connection', socket => {
                 for (const order of ordersForAnalysis) {
                     const recap = order.recapOrdine;
                     if (!recap) continue;
-                    const items = recap.split(',').map(i => i.trim()).filter(Boolean);
+                    let items = [];
+                    try {
+                        // Prova a parsare come JSON (nuovo formato)
+                        items = JSON.parse(recap);
+                    } catch {
+                        // Fallback per vecchi ordini con formato stringa
+                        items = recap.split(',').map(i => i.trim()).filter(Boolean)
+                            .map(item => {
+                                const [id, prezzo] = item.split(':');
+                                return { id: id.trim(), prezzo: parseFloat(prezzo.trim()) };
+                            });
+                    }
+
                     for (const item of items) {
-                        const [id, prezzo] = item.split(':');
-                        const idProdotto = id.trim();
-                        const prezzoFloat = parseFloat(prezzo);
+                        const idProdotto = String(item.id);
+                        const prezzoFloat = Number(item.prezzo);
                         if (!prodottiMap[idProdotto]) {
                             prodottiMap[idProdotto] = {
                                 pezziVenduti: 0,
@@ -961,26 +1411,36 @@ io.on('connection', socket => {
                 if (cb) cb({ success: false, error: 'Ordine non trovato' });
                 return;
             }
+
             const recap = order.recapOrdine;
-            const entries = recap.split(',').map(p => p.trim()).filter(p => p);
-            const prodottiMap = {};
+            let prodotti = [];
 
-            entries.forEach(entry => {
-                const [productIdStr] = entry.split(':');
-                const productId = parseInt(productIdStr);
-                if (!isNaN(productId)) {
-                    if (!prodottiMap[productId]) {
-                        const prodotto = db.prepare('SELECT nome FROM prodotti WHERE id = ?').get(productId);
-                        if (prodotto) {
-                            prodottiMap[productId] = { id: productId, nome: prodotto.nome, quantita: 1 };
+            try {
+                // Prova a parsare come JSON (nuovo formato)
+                prodotti = JSON.parse(recap);
+            } catch {
+                // Fallback per vecchi ordini con formato stringa
+                const entries = recap.split(',').map(p => p.trim()).filter(p => p);
+                const prodottiMap = {};
+
+                entries.forEach(entry => {
+                    const [productIdStr] = entry.split(':');
+                    const productId = parseInt(productIdStr);
+                    if (!isNaN(productId)) {
+                        if (!prodottiMap[productId]) {
+                            const prodotto = db.prepare('SELECT nome FROM prodotti WHERE id = ?').get(productId);
+                            if (prodotto) {
+                                prodottiMap[productId] = { id: productId, nome: prodotto.nome, quantita: 1 };
+                            }
+                        } else {
+                            prodottiMap[productId].quantita += 1;
                         }
-                    } else {
-                        prodottiMap[productId].quantita += 1;
                     }
-                }
-            });
+                });
 
-            const prodotti = Object.values(prodottiMap);
+                prodotti = Object.values(prodottiMap);
+            }
+
             if (cb) cb({ prodotti, orderId: id });
         } catch (e) {
             console.error('Errore durante remove-single-product-in-order:', e);
@@ -997,7 +1457,39 @@ io.on('connection', socket => {
             }
 
             let recap = order.recapOrdine;
-            let entries = recap.split(',').map(p => p.trim()).filter(p => p);
+            let currentProdotti = [];
+
+            // Parse del formato corrente (JSON o vecchio formato stringa)
+            try {
+                currentProdotti = JSON.parse(recap);
+            } catch {
+                // Fallback per vecchi ordini con formato stringa
+                const entries = recap.split(',').map(p => p.trim()).filter(p => p);
+                const prodottiMap = {};
+
+                entries.forEach(entry => {
+                    const [productIdStr, prezzoStr] = entry.split(':');
+                    const productId = parseInt(productIdStr);
+                    const prezzo = parseFloat(prezzoStr);
+                    if (!isNaN(productId)) {
+                        if (!prodottiMap[productId]) {
+                            const prodottoDB = db.prepare('SELECT nome FROM prodotti WHERE id = ?').get(productId);
+                            prodottiMap[productId] = {
+                                id: productId,
+                                nome: prodottoDB ? prodottoDB.nome : `Prodotto #${productId}`,
+                                prezzo: prezzo,
+                                quantita: 1,
+                                note: "" // Sempre vuote per ordini convertiti dal vecchio formato
+                            };
+                        } else {
+                            prodottiMap[productId].quantita += 1;
+                        }
+                    }
+                });
+
+                currentProdotti = Object.values(prodottiMap);
+            }
+
             const newQuantities = {};
             if (Array.isArray(newOrder)) {
                 newOrder.forEach(p => {
@@ -1005,13 +1497,10 @@ io.on('connection', socket => {
                 });
             }
 
+            // Calcola quantità correnti
             const currentCounts = {};
-            entries.forEach(entry => {
-                const [productIdStr] = entry.split(':');
-                const productId = parseInt(productIdStr);
-                if (!isNaN(productId)) {
-                    currentCounts[productId] = (currentCounts[productId] || 0) + 1;
-                }
+            currentProdotti.forEach(p => {
+                currentCounts[p.id] = (currentCounts[p.id] || 0) + (p.quantita || 1);
             });
 
             // ✅ PRIMA: Controlla disponibilità prodotti per eventuali incrementi
@@ -1039,15 +1528,11 @@ io.on('connection', socket => {
 
             // Calcola totale originale
             let totaleOriginale = 0;
-            Object.entries(currentCounts).forEach(([productIdStr, oldQ]) => {
-                const productId = parseInt(productIdStr);
-                const prodotto = db.prepare('SELECT prezzo FROM prodotti WHERE id = ?').get(productId);
-                const prezzo = prodotto ? prodotto.prezzo : 0;
-                totaleOriginale += oldQ * prezzo;
+            currentProdotti.forEach(p => {
+                totaleOriginale += (p.prezzo || 0) * (p.quantita || 1);
             });
 
-            // Aggiorna le quantità dei prodotti
-            let newRecapEntries = [];
+            // Aggiorna le quantità dei prodotti nel database
             Object.keys(newQuantities).forEach(productIdStr => {
                 const productId = parseInt(productIdStr);
                 const oldQ = currentCounts[productId] || 0;
@@ -1056,29 +1541,54 @@ io.on('connection', socket => {
                 if (diff !== 0) {
                     db.prepare('UPDATE prodotti SET quantita = quantita - ? WHERE id = ?').run(diff, productId);
                 }
+            });
 
-                if (newQ && newQ > 0) {
-                    const priceEntry = entries.find(e => parseInt(e.split(':')[0]) === productId);
-                    const entryToUse = priceEntry || `${productId}:0`;
-                    for (let i = 0; i < newQ; i++) {
-                        newRecapEntries.push(entryToUse);
+            // Crea il nuovo array di prodotti nel formato JSON
+            const newProdottiArray = [];
+            Object.entries(newQuantities).forEach(([productIdStr, newQ]) => {
+                const productId = parseInt(productIdStr);
+                if (newQ > 0) {
+                    // Trova il prodotto corrente per mantenere le sue proprietà
+                    const currentProdotto = currentProdotti.find(p => p.id == productId);
+                    if (currentProdotto) {
+                        // Mantieni le proprietà esistenti ma aggiorna la quantità
+                        for (let i = 0; i < newQ; i++) {
+                            newProdottiArray.push({
+                                id: currentProdotto.id,
+                                nome: currentProdotto.nome,
+                                prezzo: currentProdotto.prezzo,
+                                quantita: 1,
+                                note: currentProdotto.note || ""
+                            });
+                        }
+                    } else {
+                        // Se non è presente nei prodotti correnti, recupera dal DB
+                        const prodottoDB = db.prepare('SELECT nome, prezzo FROM prodotti WHERE id = ?').get(productId);
+                        if (prodottoDB) {
+                            for (let i = 0; i < newQ; i++) {
+                                newProdottiArray.push({
+                                    id: productId,
+                                    nome: prodottoDB.nome,
+                                    prezzo: prodottoDB.prezzo,
+                                    quantita: 1,
+                                    note: ""
+                                });
+                            }
+                        }
                     }
                 }
             });
 
             // Calcola nuovo totale
             let totaleNuovo = 0;
-            Object.entries(newQuantities).forEach(([productIdStr, newQ]) => {
-                const productId = parseInt(productIdStr);
-                const prodotto = db.prepare('SELECT prezzo FROM prodotti WHERE id = ?').get(productId);
-                const prezzo = prodotto ? prodotto.prezzo : 0;
-                totaleNuovo += newQ * prezzo;
+            newProdottiArray.forEach(p => {
+                totaleNuovo += (p.prezzo || 0) * (p.quantita || 1);
             });
 
-            // Aggiorna ordine
+            // Aggiorna ordine con il nuovo formato JSON
             db.prepare('UPDATE orders SET totale = ? WHERE id = ?').run(totaleNuovo, id);
-            const newRecap = newRecapEntries.join(',');
-            db.prepare('UPDATE orders SET recapOrdine = ? WHERE id = ?').run(newRecap, id);
+            const newRecapJson = JSON.stringify(newProdottiArray);
+            db.prepare('UPDATE orders SET recapOrdine = ? WHERE id = ?').run(newRecapJson, id);
 
             const prodottiAggiornati = db.prepare('SELECT * FROM prodotti').all();
             io.emit('product-list', prodottiAggiornati.map(p => {
@@ -1086,7 +1596,7 @@ io.on('connection', socket => {
                 return { ...p, tipologia: cat ? cat.name : p.tipologia, colore: cat ? cat.color : null };
             }));
 
-            if (cb) cb({ success: true, recap: newRecap, order, totaleOriginale, totaleNuovo, differenza: totaleNuovo - totaleOriginale });
+            if (cb) cb({ success: true, recap: newRecapJson, order, totaleOriginale, totaleNuovo, differenza: totaleNuovo - totaleOriginale });
             return { order, id };
         } catch (e) {
             if (cb) cb({ success: false, error: e.message });
@@ -1148,36 +1658,48 @@ io.on('connection', socket => {
                 const ts = Number(order.timestamp);
                 return ts >= startMs && ts <= endMs;
             });
-            const prodottiMap = {};
+            const prodottiMap = {}; // id -> { pezziVenduti, totaleProdotto }
             let totaleDef = 0;
             for (const order of filteredOrders) {
                 const recap = order.recapOrdine;
                 if (!recap) continue;
-                const items = recap.split(',').map(i => i.trim()).filter(Boolean);
-                for (const item of items) {
-                    const [id, prezzo] = item.split(':');
-                    const idProdotto = id.trim();
-                    const prezzoFloat = parseFloat(prezzo);
-                    if (!prodottiMap[idProdotto]) {
-                        prodottiMap[idProdotto] = {
-                            pezziVenduti: 0,
-                            totaleProdotto: 0,
-                        };
+                let items = [];
+                let parsedOk = false;
+                // Prova nuovo formato JSON
+                try {
+                    const arr = JSON.parse(recap);
+                    if (Array.isArray(arr)) {
+                        items = arr.map(p => ({ id: p.id, prezzo: parseFloat(p.prezzo), quantita: p.quantita || 1 }));
+                        parsedOk = true;
                     }
-                    prodottiMap[idProdotto].pezziVenduti += 1;
-                    prodottiMap[idProdotto].totaleProdotto += prezzoFloat;
-                    totaleDef += prezzoFloat;
+                } catch { /* ignore */ }
+                if (!parsedOk) {
+                    // Vecchio formato: "id:prezzo,id:prezzo,..."
+                    items = recap.split(',').map(i => i.trim()).filter(Boolean).map(token => {
+                        const [id, prezzo] = token.split(':');
+                        return { id: id && id.replace(/[^0-9]/g,'') || id, prezzo: parseFloat((prezzo||'').trim()), quantita: 1 };
+                    }).filter(x => !isNaN(x.prezzo));
+                }
+                for (const item of items) {
+                    const idProdotto = String(item.id);
+                    const prezzoTot = item.prezzo * (item.quantita || 1);
+                    if (!prodottiMap[idProdotto]) {
+                        prodottiMap[idProdotto] = { pezziVenduti: 0, totaleProdotto: 0 };
+                    }
+                    prodottiMap[idProdotto].pezziVenduti += (item.quantita || 1);
+                    prodottiMap[idProdotto].totaleProdotto += prezzoTot;
+                    totaleDef += prezzoTot;
                 }
             }
             const result = [];
-            const stmt = db.prepare('SELECT nome FROM prodotti WHERE id = ?');
+            const stmtNome = db.prepare('SELECT nome FROM prodotti WHERE id = ?');
             for (const id in prodottiMap) {
-                const prodotto = prodottiMap[id];
-                const nomeProdotto = stmt.get(id)?.nome || `Prodotto #${id}`;
+                const dato = prodottiMap[id];
+                const nomeProdotto = stmtNome.get(id)?.nome || `Prodotto #${id}`;
                 result.push({
                     prodotto: nomeProdotto,
-                    pezziVenduti: prodotto.pezziVenduti,
-                    totaleProdotto: parseFloat(prodotto.totaleProdotto.toFixed(2)),
+                    pezziVenduti: dato.pezziVenduti,
+                    totaleProdotto: parseFloat(dato.totaleProdotto.toFixed(2))
                 });
             }
             if (cb) cb({ vendite: result, TotaleDef: parseFloat(totaleDef.toFixed(2)) });
@@ -1185,7 +1707,6 @@ io.on('connection', socket => {
             if (cb) cb({ error: 'Errore nel calcolo vendite' });
         }
     });
-
     socket.on('product', product => {
         products.push(product)
         console.log('Nuovo prodotto ricevuto:', product)
@@ -1203,7 +1724,6 @@ io.on('connection', socket => {
             callback({ success: false, message: 'Credenziali non valide' });
         }
     });
-
     socket.on('disconnect', () => {
         if (socket.id === masterId) {
             console.log('Master disconnesso');
@@ -1211,74 +1731,82 @@ io.on('connection', socket => {
         }
     });
 })
+    server.listen(3000, () => {
+        console.log('Server Socket.IO in ascolto su http://localhost:3000')
+    })
 
-server.listen(3000, () => {
-    console.log('Server Socket.IO in ascolto su http://localhost:3000')
-})
-
-function getOrderById(id) {
-    return db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
-}
-app.get('/get-socket-ip', (req, res) => {
-    const interfaces = os.networkInterfaces();
-    let ip = null;
-    for (const name of Object.keys(interfaces)) {
-        for (const iface of interfaces[name]) {
-            if (iface.family === 'IPv4' && !iface.internal) {
-                ip = iface.address;
+    function getOrderById(id) {
+        return db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
+    }
+    app.get('/get-socket-ip', (req, res) => {
+        const interfaces = os.networkInterfaces();
+        let ip = null;
+        for (const name of Object.keys(interfaces)) {
+            for (const iface of interfaces[name]) {
+                if (iface.family === 'IPv4' && !iface.internal) {
+                    ip = iface.address;
+                }
             }
         }
-    }
-    res.json({ ip });
-});
-app.get('/get-socket-ip', (req, res) => {
-    const interfaces = os.networkInterfaces();
-    let ip = null;
-    for (const name of Object.keys(interfaces)) {
-        for (const iface of interfaces[name]) {
-            if (iface.family === 'IPv4' && !iface.internal) {
-                ip = iface.address;
-            }
-        }
-    }
-    res.json({ ip });
-});
+        res.json({ ip });
+    });
+
+
 function parseRecapOrdine(recapOrdine, db) {
-    const items = recapOrdine
-        .split(',')
-        .map(p => p.trim())
-        .filter(Boolean);
-
-    const totals = {}; // { id: { totale: 0, quantità: 0 } }
-
-    for (const item of items) {
-        const [id, price] = item.split(':');
-        const parsedId = id.trim();
-        const parsedPrice = parseFloat(price.trim());
-
-        if (!totals[parsedId]) {
-            totals[parsedId] = { totale: 0, quantità: 0 };
+    // Restituisce oggetto: { [id]: { nome, totalePrezzo, totaleSingoloProdotto, quantità } }
+    if (!recapOrdine || typeof recapOrdine !== 'string') return {};
+    let items = [];
+    let parsedJson = false;
+    // Nuovo formato JSON: array di prodotti {id, nome, prezzo, quantita, note}
+    try {
+        const arr = JSON.parse(recapOrdine);
+        if (Array.isArray(arr)) {
+            items = arr.map(p => ({
+                id: p.id,
+                prezzo: parseFloat(p.prezzo),
+                quantita: p.quantita || 1
+            })).filter(p => !isNaN(p.prezzo));
+            parsedJson = true;
         }
-
-        totals[parsedId].totale += parsedPrice;
-        totals[parsedId].quantità += 1;
+    } catch { /* ignore */ }
+    if (!parsedJson) {
+        // Vecchio formato: id:prezzo,id:prezzo,... (quantità implicita = numero di occorrenze)
+        items = recapOrdine.split(',')
+            .map(s => s.trim())
+            .filter(Boolean)
+            .map(token => {
+                const [idRaw, prezzoRaw] = token.split(':');
+                const id = idRaw && idRaw.replace(/[^0-9]/g,'') || idRaw; // pulizia eventuali caratteri JSON residui
+                const prezzo = parseFloat((prezzoRaw||'').trim());
+                return { id, prezzo, quantita: 1 };
+            })
+            .filter(p => p.id != null && !isNaN(p.prezzo));
     }
-
-    // Aggiunge il nome del prodotto da DB
+    const totals = {}; // id -> { totale, quantità }
+    for (const item of items) {
+        const id = String(item.id);
+        if (!totals[id]) totals[id] = { totale: 0, quantità: 0 };
+        const qty = item.quantita || 1;
+        totals[id].totale += (item.prezzo * qty);
+        totals[id].quantità += qty;
+    }
     const result = {};
-
+    const stmt = db.prepare('SELECT nome FROM prodotti WHERE id = ?');
     for (const id in totals) {
-        const prodotto = db.prepare('SELECT nome FROM prodotti WHERE id = ?').get(id);
+        const prodotto = stmt.get(id);
+        const totale = totals[id].totale;
+        const qta = totals[id].quantità || 1;
+        const prezzoUnit = qta > 0 ? (totale / qta) : 0;
         result[id] = {
             nome: prodotto ? prodotto.nome : 'Prodotto sconosciuto',
-            totalePrezzo: totals[id].totale,
-            totaleSingoloProdotto: totals[id].totale/ totals[id].quantità,
-            quantità: totals[id].quantità
+            totalePrezzo: parseFloat(totale.toFixed(2)),
+            totaleSingoloProdotto: parseFloat(prezzoUnit.toFixed(2)),
+            quantità: qta
         };
     }
-
     return result;
 }
+
 app.get("/get-db-from-folder", (req, res) => {
     try {
         const dbs = fs
