@@ -1,0 +1,63 @@
+{
+  "name": "progetto-cassa",
+  "version": "1.0.0",
+  "description": "Applicazione cassa gestionale",
+  "author": "Massimiliano",
+  "main": "main.js",
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "cors": "^2.8.5",
+    "escpos": "^3.0.0-alpha.6",
+    "escpos-usb": "^3.0.0-alpha.4",
+    "express": "^5.1.0",
+    "handlebars": "^4.7.8",
+    "multer": "^2.0.2",
+    "node-thermal-printer": "^4.5.0",
+    "pdfkit": "^0.17.1",
+    "puppeteer": "^24.11.2",
+    "sharp": "^0.34.3",
+    "socket.io": "^4.8.1",
+    "usb": "^2.15.0"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "scripts": {
+    "electron": "electron .",
+    "dist": "electron-builder",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "build": {
+    "appId": "com.tuonome.progettocassa",
+    "files": [
+      "main.js",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "directories": {
+      "buildResources": "img"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "asar": false,
+    "extraResources": [
+      {
+        "from": "server/",
+        "to": "app/server/",
+        "filter": [
+          "**/*",
+          "!node_modules/**"
+        ]
+      },
+      {
+        "from": "client/dist/",
+        "to": "app/client/dist/",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
+  }
+}
