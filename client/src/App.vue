@@ -24,21 +24,24 @@ function confirmLogout() {
     authStore.logout() // Effettua il logout
     router.push({ name: 'Home' })
 }
+
+onMounted(() => {
+    console.log('App.vue montato!');
+    console.log('Route attiva:', router.currentRoute.value.path);
+    if (router.currentRoute.value.path !== '/') {
+        router.push('/');
+    }
+})
 </script>
 
 <template>
   <div>
       <div>
           <!-- Bottone logout (div cliccabile) -->
-          <div
-              style="position:fixed;top:0;right:210px;z-index:1000;background:#eee;padding:2px 16px;border-radius:0 0 0 8px;min-width:120px;text-align:right;"
-          >
+          <div class="button-app-top-label-db-name">
               Evento: <b>{{ deviceStore.dbName }}</b>
           </div>
-          <div
-              @click="showLogoutModal = true"
-              style="cursor:pointer;position:fixed;top:0;right:0;z-index:1000;background:#eee;padding:2px 16px;border-radius:0 0 0 8px;min-width:120px;text-align:right;"
-          >
+          <div class="button-app-top-label-role-name" @click="showLogoutModal = true">
               Stato dispositivo: <b>{{ deviceStore.isServer ? 'Master' : 'Client' }}</b>
           </div>
 

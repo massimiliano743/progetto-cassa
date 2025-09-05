@@ -1,7 +1,8 @@
 import { io } from 'socket.io-client'
 
-// URL del server Socket.IO (puoi parametrizzarlo in futuro)
-const urlServer = window.location.hostname;
+// Forzo l'uso di 'localhost' come urlServer quando l'app gira in Electron, per risolvere il problema di connessione Socket.IO.
+const isElectron = navigator.userAgent.toLowerCase().includes('electron');
+const urlServer = isElectron ? 'localhost' : window.location.hostname;
 
 let socket = null
 
@@ -23,4 +24,3 @@ export function disconnectSocket() {
         socket = null
     }
 }
-

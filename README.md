@@ -50,6 +50,47 @@ npm run dev
 
 Il client sarà attivo sulla porta 5173 (o quella configurata da Vite).
 
+## Build e distribuzione con Electron
+
+### 1. Prepara la build del frontend
+
+Dalla cartella principale del progetto:
+
+```bash
+cd client
+npm run build
+cd ..
+```
+
+### 2. Installa le dipendenze Electron (se non già fatto)
+
+```bash
+npm install
+```
+
+### 3. Avvio in modalità sviluppo Electron
+
+Dalla root del progetto:
+
+```bash
+npm run electron
+```
+
+### 4. Genera l’eseguibile desktop
+
+Dalla root del progetto:
+
+```bash
+npm run dist
+```
+
+Al termine troverai l’eseguibile nella cartella `dist/` (ad esempio `.app` o `.dmg` su macOS, `.exe` su Windows).
+
+### Note
+
+- Puoi personalizzare nome, icona e altri parametri modificando la sezione `build` nel file `package.json` principale.
+- Per la distribuzione su macOS senza avvisi di sicurezza, consulta la documentazione Electron per la notarizzazione.
+
 ## Note aggiuntive
 
 - Assicurati che le porte 3000 (server) e 5173 (client) siano libere.
@@ -75,4 +116,3 @@ Il client sarà attivo sulla porta 5173 (o quella configurata da Vite).
 ## Contatti
 
 Per assistenza tecnica, contattare lo sviluppatore.
-

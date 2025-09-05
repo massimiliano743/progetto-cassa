@@ -1,7 +1,8 @@
 import {ref} from "vue";
 import {createSocket, getSocketSync} from "@/socket.js";
 
-const urlServer = window.location.hostname;
+const isElectron = navigator.userAgent.toLowerCase().includes('electron');
+const urlServer = isElectron ? 'localhost' : window.location.hostname;
 export const rigaAttiva = ref(null)
 
 export function toggleRiga(id) {

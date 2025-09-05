@@ -4,7 +4,8 @@ import { useRouter } from 'vue-router';
 import { useDeviceStore } from '@/deviceStore'
 
 const deviceStore = useDeviceStore()
-const urlServer = window.location.hostname;
+const isElectron = navigator.userAgent.toLowerCase().includes('electron');
+const urlServer = isElectron ? 'localhost' : window.location.hostname;
 const authError = ref('');
 const isLoading = ref(false);
 const router = useRouter();
@@ -13,6 +14,7 @@ const selected = ref(''); // db selezionato
 const newDbName = ref('');
 
 async function getDb() {
+    console.log('Chiamo /get-db-from-folder su', urlServer);
     const res = await fetch(`http://${urlServer}:3000/get-db-from-folder`);
     if (res.ok) {
         const data = await res.json();
@@ -26,11 +28,7 @@ async function getDb() {
 
 async function selectDb() {
     console.log('Database selezionato:', selected.value);
-    import('@/deviceStore').then(mod => {
-        if (mod.useDeviceStore) {
-            mod.useDeviceStore().databaseName(selected.value);
-        }
-    });
+    deviceStore.databaseName(selected.value);
     fetch(`http://${urlServer}:3000/set-db?dbName=${selected.value}`, {
         headers: {
             'x-db-name': selected.value
@@ -49,11 +47,7 @@ function createDb() {
         if (response.ok) {
             alert(`✅ Evento creato con successo: ${newDbName.value}`);
             allDb.value.push(newDbName.value);
-            import('@/deviceStore').then(mod => {
-                if (mod.useDeviceStore) {
-                    mod.useDeviceStore().databaseName(newDbName.value);
-                }
-            });
+            deviceStore.databaseName(newDbName.value);
             fetch(`http://${urlServer}:3000/set-db?dbName=${newDbName.value}`, {
                 headers: {
                     'x-db-name': selected.value
@@ -70,6 +64,7 @@ function createDb() {
 
 }
 onMounted(async () => {
+    console.log('SelectDb.vue montato!');
     try {
         allDb.value = await getDb();
         console.log("allDb caricati:", allDb.value);
@@ -117,6 +112,7 @@ onMounted(async () => {
 <style scoped>
 .select-db{
     max-width: 1200px;
+    height: 100vh;
     margin: 0 auto;
     justify-content: center;
     display: flex;

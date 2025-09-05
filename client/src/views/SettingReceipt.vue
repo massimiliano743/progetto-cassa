@@ -1,7 +1,10 @@
 <script setup>
 import { ref } from 'vue'
+import {useRouter} from "vue-router";
+const router = useRouter()
 
-const urlServer = window.location.hostname;
+const isElectron = navigator.userAgent.toLowerCase().includes('electron');
+const urlServer = isElectron ? 'localhost' : window.location.hostname;
 const selectedImage = ref(null)
 const imagePreview = ref('')
 const isUploading = ref(false)
@@ -145,9 +148,16 @@ async function uploadCanvasImage(dataUrl) {
         isUploading.value = false
     }
 }
+function tornaIndietro() {
+    router.back()
+}
 </script>
 
 <template>
+    <div class="back-page" @click="tornaIndietro">
+        <div class="icon-back-page"></div>
+        <div class="text-back">Torna Indietro</div>
+    </div>
     <div class="receipt-config-page">
         <h1>Configurazione Scontrino</h1>
         <!-- Placeholder per future configurazioni -->
@@ -212,7 +222,8 @@ async function uploadCanvasImage(dataUrl) {
     </div>
 </template>
 
-<style scoped>
+<style>
+
 .receipt-config-page {
     max-width: 800px;
     margin: 0 auto;
@@ -303,3 +314,6 @@ button:hover {
     border-radius: 8px;
 }
 </style>
+
+
+

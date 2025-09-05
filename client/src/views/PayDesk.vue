@@ -3,6 +3,8 @@ import ProdottoPaginaCassa from "@/components/ProdottoPaginaCassa.vue";
 import {useProdottoStore} from "@/stores/prodottoStore.js";
 import { reactive, onMounted, computed, watch, ref } from "vue";
 import { useOrderStore } from '@/stores/orderStore';
+import {useRouter} from "vue-router";
+const router = useRouter()
 
 const prodottoStore = useProdottoStore()
 const orderStore = useOrderStore()
@@ -332,12 +334,19 @@ function closeOption()
     noteOrdine.value = "";
     console.log("modale opzioni ordine chiuso");
 }
+function tornaIndietro() {
+    router.back()
+}
 
 </script>
 
 <template>
     <div class="main-container">
         <div class="left-part">
+            <div class="back-page" @click="tornaIndietro">
+                <div class="icon-back-page"></div>
+                <div class="text-back">Torna Indietro</div>
+            </div>
             <div
                 v-for="categoria in categorie"
                 :key="categoria"
@@ -483,6 +492,9 @@ function closeOption()
         padding: 0 30px 30px 30px;
         overflow-y: auto;
         box-sizing: border-box;
+        .back-page{
+            margin-left: 0px !important;
+       }
     }
     .right-part{
         width: 20%;

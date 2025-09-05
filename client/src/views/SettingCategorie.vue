@@ -118,11 +118,11 @@ function tornaIndietro() {
 </script>
 
 <template>
+    <div class="back-page" @click="tornaIndietro">
+        <div class="icon-back-page"></div>
+        <div class="text-back">Torna Indietro</div>
+    </div>
     <div class="setting-categories">
-        <div class="back-page" @click="tornaIndietro">
-            <div class="icon-back-page"></div>
-            <div class="text-back">Torna Indietro</div>
-        </div>
         <div class="color-picker-container">
 
             <form @submit.prevent="salvaCategoria">
@@ -276,7 +276,7 @@ function tornaIndietro() {
     margin: 0 auto;
     padding: 2rem;
     text-align: center;
-    .back-page{
+    /*.back-page{
         display: flex;
         flex-direction: row;
         align-items: center;
@@ -296,7 +296,7 @@ function tornaIndietro() {
             font-weight: 700;
             color: #213547;
         }
-    }
+    }*/
     .color-picker-container {
         font-family: Arial, sans-serif;
         max-width: 500px;
