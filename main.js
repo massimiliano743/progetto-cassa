@@ -1,14 +1,8 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
 const http = require('http');
 
-let backendProcess;
-
 const isProd = app.isPackaged;
-const serverPath = isProd
-  ? path.join(process.resourcesPath, 'app', 'server', 'index.js')
-  : path.join(__dirname, 'server', 'index.js');
 
 function createWindow () {
   const win = new BrowserWindow({
@@ -50,47 +44,80 @@ function waitForBackendReady(retries = 30, delay = 1000) {
   });
 }
 
+function startServer() {
+  return new Promise((resolve, reject) => {
+    console.log('Electron: Avvio backend Node.js integrato...');
+
+    const serverPath = isProd
+      ? path.join(process.resourcesPath, 'app', 'server', 'index.js')
+      : path.join(__dirname, 'server', 'index.js');
+
+    console.log('Electron: Percorso server:', serverPath);
+    console.log('Electron: App packageed:', isProd);
+
+    // Verifica che il file server esista
+    const fs = require('fs');
+    if (!fs.existsSync(serverPath)) {
+      console.error('Electron: File server non trovato:', serverPath);
+      reject(new Error('File server non trovato'));
+      return;
+    }
+
+    try {
+      // Salva i percorsi originali
+      const originalCwd = process.cwd();
+      const originalModulePaths = [...module.paths];
+
+      // Imposta il working directory per il server
+      const serverCwd = isProd ? path.dirname(serverPath) : path.join(__dirname, 'server');
+      console.log('Electron: Cambio working directory a:', serverCwd);
+      process.chdir(serverCwd);
+
+      // Aggiungi il percorso dei node_modules dell'app ai module paths
+      if (isProd) {
+        const appNodeModulesPath = path.join(__dirname, 'node_modules');
+        console.log('Electron: Aggiunto module path:', appNodeModulesPath);
+        module.paths.unshift(appNodeModulesPath);
+      }
+
+      // Richiede ed esegue il server nel processo corrente
+      delete require.cache[require.resolve(serverPath)];
+      require(serverPath);
+
+      // Ripristina i percorsi originali
+      process.chdir(originalCwd);
+      module.paths.length = 0;
+      module.paths.push(...originalModulePaths);
+
+      resolve();
+    } catch (error) {
+      console.error('Electron: Errore nell\'avvio del server integrato:', error);
+      reject(error);
+    }
+  });
+}
+
 app.whenReady().then(async () => {
-  console.log('Electron: Avvio backend Node.js...');
-  console.log('Electron: Percorso server:', serverPath);
-  console.log('Electron: App packageed:', isProd);
-
-  // Verifica che il file server esista
-  const fs = require('fs');
-  if (!fs.existsSync(serverPath)) {
-    console.error('Electron: File server non trovato:', serverPath);
-    app.quit();
-    return;
-  }
-
-  backendProcess = spawn('node', [serverPath], {
-    stdio: 'inherit',
-    shell: true,
-    cwd: isProd ? path.dirname(serverPath) : path.join(__dirname, 'server')
-  });
-
-  backendProcess.on('error', (error) => {
-    console.error('Electron: Errore nell\'avvio del backend:', error);
-    app.quit();
-  });
-
   try {
+    await startServer();
     console.log('Electron: Attendo che il backend sia pronto su http://localhost:3000/get-socket-ip...');
     await waitForBackendReady(30, 1000);
     console.log('Electron: Backend pronto, apro la finestra.');
     createWindow();
   } catch (e) {
-    console.error('Electron: Errore durante l\'attesa del backend:', e);
+    console.error('Electron: Errore durante l\'avvio:', e);
     app.quit();
   }
 });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
-  // Termina il backend quando Electron si chiude
-  if (backendProcess) backendProcess.kill();
 });
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});
+
+app.on('before-quit', () => {
+  console.log('Electron: Chiusura applicazione...');
 });
