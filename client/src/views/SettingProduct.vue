@@ -4,7 +4,9 @@ import { useProdottoStore } from '@/stores/prodottoStore'
 import { useRouter } from 'vue-router'
 import { useCategoryStore } from "@/stores/categoryStore.js";
 
-const urlServer = window.location.hostname;
+const isElectron = navigator.userAgent.toLowerCase().includes('electron');
+const urlServer = isElectron ? 'localhost' : window.location.hostname;
+
 const router = useRouter()
 const nome = ref('')
 const prezzo = ref(0)
@@ -286,15 +288,14 @@ function updatePrinterStatus(message, color) {
             {{ printerStatus }}
         </div>
     </div>
-
+    <div class="back-page" @click="tornaIndietro">
+        <div class="icon-back-page"></div>
+        <div class="text-back">Torna Indietro</div>
+    </div>
     <div class="setting-product-app">
         <div class="setting-product">
             <div class="add-name-product">
                 <div class="text-add-product">
-                    <div class="back-page" @click="tornaIndietro">
-                        <div class="icon-back-page"></div>
-                        <div class="text-back">Torna Indietro</div>
-                    </div>
                     <h2>Aggiungi Prodotto</h2>
                 </div>
                 <form @submit.prevent="aggiungiProdotto">
@@ -498,27 +499,6 @@ function updatePrinterStatus(message, color) {
 .setting-product button {
     padding: 0.5rem 1rem;
     width: 100%;
-}
-
-.back-page {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 1rem;
-    cursor: pointer;
-}
-
-.icon-back-page {
-    background-image: url("data:image/svg+xml,%3C%3Fxml version='1.0' encoding='UTF-8'%3F%3E%3C!-- Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools --%3E%3Csvg width='40px' height='40px' viewBox='-6.5 0 38 38' version='1.1' xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink'%3E%3Ctitle%3Eleft-arrow%3C/title%3E%3Cdesc%3ECreated with Sketch.%3C/desc%3E%3Cg id='icons' stroke='none' stroke-width='1' fill='none' fill-rule='evenodd'%3E%3Cg id='ui-gambling-website-lined-icnos-casinoshunter' transform='translate(-1641.000000, -158.000000)' fill='%231C1C1F' fill-rule='nonzero'%3E%3Cg id='1' transform='translate(1350.000000, 120.000000)'%3E%3Cpath d='M317.812138,38.5802109 L328.325224,49.0042713 L328.41312,49.0858421 C328.764883,49.4346574 328.96954,49.8946897 329,50.4382227 L328.998248,50.6209428 C328.97273,51.0514917 328.80819,51.4628128 328.48394,51.8313977 L328.36126,51.9580208 L317.812138,62.4197891 C317.031988,63.1934036 315.770571,63.1934036 314.990421,62.4197891 C314.205605,61.6415481 314.205605,60.3762573 314.990358,59.5980789 L322.274264,52.3739093 L292.99947,52.3746291 C291.897068,52.3746291 291,51.4850764 291,50.3835318 C291,49.2819872 291.897068,48.3924345 292.999445,48.3924345 L322.039203,48.3917152 L314.990421,41.4019837 C314.205605,40.6237427 314.205605,39.3584519 314.990421,38.5802109 C315.770571,37.8065964 317.031988,37.8065964 317.812138,38.5802109 Z' id='left-arrow' transform='translate(310.000000, 50.500000) scale(-1, 1) translate(-310.000000, -50.500000) '%3E%3C/path%3E%3C/g%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    width: 40px;
-    height: 40px;
-}
-
-.text-back {
-    font-size: 24px;
-    font-weight: 700;
-    color: #213547;
 }
 
 .product-list {
