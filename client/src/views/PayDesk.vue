@@ -37,12 +37,12 @@ const originalOrderTotal = ref(0);
 const showModifyOrderModal = ref(false);
 
 function toggleScontoTotale() {
-  scontoTotale.value = !scontoTotale.value;
-  if (scontoTotale.value) scontoParziale.value = false;
+    scontoTotale.value = !scontoTotale.value;
+    if (scontoTotale.value) scontoParziale.value = false;
 }
 function toggleScontoParziale() {
-  scontoParziale.value = !scontoParziale.value;
-  if (scontoParziale.value) scontoTotale.value = false;
+    scontoParziale.value = !scontoParziale.value;
+    if (scontoParziale.value) scontoTotale.value = false;
 }
 
 function confermaOpzioniOrdine() {
@@ -71,11 +71,11 @@ const quantitaLocali = reactive({});
 console.log('prodotti caricati:', prodottoStore.prodotti)
 const sortedData = computed(() => {
     const data = [...prodottoStore.prodotti]
-        return data.sort((a, b) => {
-            if (a.tipologia < b.tipologia) return -1;
-            if (a.tipologia > b.tipologia) return 1;
-            return 0;
-        });
+    return data.sort((a, b) => {
+        if (a.tipologia < b.tipologia) return -1;
+        if (a.tipologia > b.tipologia) return 1;
+        return 0;
+    });
     return data;
 })
 const categorie = computed(() => {
@@ -87,13 +87,13 @@ watch(sortedData, (val) => {
 })
 
 watch(
-  () => prodottoStore.prodotti.map(p => ({ nome: p.nome, quantita: p.quantita })),
-  (prodottiAggiornati) => {
-    prodottiAggiornati.forEach(p => {
-      quantitaLocali[p.nome] = p.quantita;
-    });
-  },
-  { immediate: true }
+    () => prodottoStore.prodotti.map(p => ({ nome: p.nome, quantita: p.quantita })),
+    (prodottiAggiornati) => {
+        prodottiAggiornati.forEach(p => {
+            quantitaLocali[p.nome] = p.quantita;
+        });
+    },
+    { immediate: true }
 )
 
 onMounted(async () => {
@@ -257,11 +257,11 @@ const occorrenzeProdotti = computed(() => {
 });
 // Calcola prodotti unici per la modale prodotti (per id)
 const prodottiUnici = computed(() => {
-  const mappa = {};
-  prodottiDaSelezionare.value.forEach(p => {
-    if (!mappa[p.id]) mappa[p.id] = p;
-  });
-  return Object.values(mappa);
+    const mappa = {};
+    prodottiDaSelezionare.value.forEach(p => {
+        if (!mappa[p.id]) mappa[p.id] = p;
+    });
+    return Object.values(mappa);
 });
 // Funzione per decrementare la quantità selezionata (solo rimozione)
 let inter = {}; // Tracciamento quantità per ogni prodotto
@@ -277,7 +277,7 @@ function incrementaQuantitaSelezionata(id) {
 
     const quantitaCorrente = Number(prodotto.quantita) || 0;
     const quantitàTotale = quantitaCorrente + quantitaAttuale;
-        //da rivedere questo, non torna con il controllo
+    //da rivedere questo, non torna con il controllo
     if (quantitaCorrente + inter[id] < quantitàTotale) {
         prodotto.quantita = quantitaCorrente + 1;
         inter[id]++;
@@ -694,7 +694,7 @@ function resetModifyOrderState() {
         box-sizing: border-box;
         .back-page{
             margin-left: 0px !important;
-       }
+        }
     }
     .right-part{
         width: 20%;
@@ -704,9 +704,9 @@ function resetModifyOrderState() {
         display: flex;
         flex-direction: column;
         .prodotti{
-                flex: 1 1 auto;
-                overflow-y: auto;
-                max-height: calc(100vh - 80px);
+            flex: 1 1 auto;
+            overflow-y: auto;
+            max-height: calc(100vh - 80px);
             .prodotto-remove-scontrino{
                 display: flex;
                 justify-content: space-between;
@@ -815,7 +815,7 @@ function resetModifyOrderState() {
         }
     }
 
-    }
+}
 
 .categoria-section {
 }
