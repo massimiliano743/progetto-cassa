@@ -9,6 +9,7 @@ import {
     removeOrder
 } from '@/economicsSettingvue.js'
 import { useRouter } from "vue-router";
+import { getSocketSync } from "@/socket.js";
 
 const economics = useEconomicsStore()
 const router = useRouter()
@@ -46,6 +47,21 @@ async function handleFilter() {
 function tornaIndietro() {
     router.back()
 }
+function Stampa(id) {
+    console.log('stampa',id);
+    const socket = getSocketSync();
+    if (socket) {
+        socket.emit('stampa-ordine', id, (response) => {
+            if (response.success) {
+                alert(`Richiesta di stampa per l'ordine #${id} inviata con successo.`);
+            } else {
+                alert(`Errore durante la stampa dell'ordine #${id}: ${response.error}`);
+            }
+        });
+    } else {
+        alert('Errore: connessione al server non disponibile.');
+    }
+}
 
 </script>
 
@@ -62,7 +78,7 @@ function tornaIndietro() {
             <div class="elemento-singolo active" data-target="scontrino">Ultimo scontrino</div>
             <div class="elemento-singolo" data-target="gestione">Gestione Scontrini</div>
             <div class="elemento-singolo" data-target="prodotti">Prodotti Venduti</div>
-            <div class="elemento-singolo" data-target="storico">Storico</div>
+            <div class="elemento-singolo hidden" data-target="storico">Storico</div>
         </div>
         <div class="sezione-info">
             <div class="contenuto visible" id="scontrino">
@@ -91,6 +107,7 @@ function tornaIndietro() {
                     <thead>
                     <tr>
                         <th></th>
+                        <th></th>
                         <th>ID</th>
                         <th>Data</th>
                         <th>Totale Ordine (€)</th>
@@ -101,6 +118,7 @@ function tornaIndietro() {
                         <!-- Riga principale -->
                         <tr @click="toggleRiga(ordine.id)" class="clickable-row" :class="{ active: rigaAttiva === ordine.id }">
                             <td class="remove-column" @click="handleRemove(ordine.id)"></td>
+                            <td><button @click="Stampa(ordine.id)">Stampa</button></td>
                             <td>{{ ordine.id }}</td>
                             <td>{{ formatDate(ordine.timestamp) }}</td>
                             <td>€ {{ ordine.totale.toFixed(2) }}</td>
@@ -108,7 +126,7 @@ function tornaIndietro() {
 
                         <!-- Riga espansa con dettagli -->
                         <tr v-if="rigaAttiva === ordine.id" class="riga-dettagli">
-                            <td colspan="4">
+                            <td colspan="5">
                                 <table class="tabella-dettagli">
                                     <thead>
                                     <tr>
@@ -277,6 +295,10 @@ function tornaIndietro() {
         .tabella-ordini{
             td{
                 cursor: pointer;
+            }
+            .clickable-row.active button{
+                background: white;
+                color: #2196f3;
             }
             .clickable-row.active{
                 background-color: #2196f3;

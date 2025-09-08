@@ -30,6 +30,12 @@ const noteProdottiArray = ref([]);
 
 const noteProdotti = reactive({});
 
+// Variabili per la gestione della modifica ordine
+const isModifyingOrder = ref(false);
+const originalOrder = ref(null);
+const originalOrderTotal = ref(0);
+const showModifyOrderModal = ref(false);
+
 function toggleScontoTotale() {
   scontoTotale.value = !scontoTotale.value;
   if (scontoTotale.value) scontoParziale.value = false;
@@ -107,6 +113,14 @@ const totaleScontato = computed(() => {
         totale = totale - (totale * valoreScontoParziale.value / 100);
     }
     return totale < 0 ? 0 : totale;
+});
+
+// Computed per calcolare la differenza di prezzo tra ordine originale e modificato
+const differenzaPrezzo = computed(() => {
+    if (!isModifyingOrder.value || originalOrderTotal.value === 0) {
+        return 0;
+    }
+    return totaleScontato.value - originalOrderTotal.value;
 });
 
 function aggiungiAScontrino(prodotto) {
@@ -201,8 +215,8 @@ function confermaEliminazioneSingola() {
     showDeleteOrder.value= false;
 }
 function stornaElementoDaOrdine(){
-    showDeleteOrderSingleProduct.value= true;
-    console.log('prodotto stornato');
+    showModifyOrderModal.value = true;
+    console.log('Apertura modale modifica ordine');
 }
 async function confermaEliminazioneSingleProduct() {
     let orderNumber = document.querySelector('#ordineDaEliminareSingoloProdotto').value;
@@ -280,7 +294,7 @@ function decrementaQuantitaSelezionata(id) {
 
     const quantitaCorrente = Number(prodotto.quantita) || 0;
 
-    if (quantitaCorrente > 1) {
+    if (quantitaCorrente >= 1) {
         prodotto.quantita = quantitaCorrente - 1;
 
         if (inter[id] == null) inter[id] = 0;
@@ -338,6 +352,159 @@ function tornaIndietro() {
     router.back()
 }
 
+// Nuova funzione per confermare il caricamento dell'ordine da modificare
+async function confermaModificaOrdine() {
+    let orderNumber = document.querySelector('#ordineModificare').value;
+    if (!orderNumber) {
+        alert('Inserisci un numero ordine valido');
+        return;
+    }
+
+    try {
+        // Usa la funzione esistente removeSingleProductOrder per ottenere i dati dell'ordine
+        const { prodotti, orderId } = await orderStore.removeSingleProductOrder(orderNumber);
+
+        if (prodotti && prodotti.length > 0) {
+            // Salva i dati dell'ordine originale
+            originalOrder.value = { id: orderId, prodotti: prodotti };
+            originalOrderTotal.value = prodotti.reduce((total, p) => total + (p.prezzo * (p.quantita || 1)), 0);
+
+            // Pulisci lo scontrino attuale
+            scontrino.value = [];
+            conto.value = 0;
+
+            // Carica i prodotti dell'ordine nello scontrino
+            prodotti.forEach(prodotto => {
+                for (let i = 0; i < (prodotto.quantita || 1); i++) {
+                    const prodottoCompleto = prodottoStore.prodotti.find(p => p.id === prodotto.id);
+                    if (prodottoCompleto) {
+                        const prodottoScontrino = {
+                            ...prodottoCompleto,
+                            idProdotto: prodottoCompleto.id,
+                            note: prodotto.note || ''
+                        };
+                        scontrino.value.push(prodottoScontrino);
+                        conto.value += parseFloat(prodotto.prezzo) || 0;
+                    }
+                }
+            });
+
+            // Imposta lo stato di modifica
+            isModifyingOrder.value = true;
+            orderIdModaleRemoveSingleProduct.value = orderNumber;
+
+        } else {
+            alert('Nessun ordine trovato con questo numero');
+        }
+    } catch (error) {
+        alert(`⚠️ Errore: ${error}`);
+    }
+
+    showModifyOrderModal.value = false;
+}
+
+// Funzione per confermare la modifica dell'ordine
+async function confermaModificaOrdineFinale() {
+    if (!isModifyingOrder.value || !originalOrder.value) {
+        alert('Nessun ordine in modifica');
+        return;
+    }
+
+    if (scontrino.value.length === 0) {
+        alert('Non ci sono prodotti nello scontrino modificato');
+        return;
+    }
+
+    const ids = scontrino.value.map(prodotto => prodotto.idProdotto);
+
+    try {
+        const prodottiNonDisponibili = await orderStore.checkQuantity(ids);
+
+        if (prodottiNonDisponibili && prodottiNonDisponibili.length > 0) {
+            const idsNonDisponibili = prodottiNonDisponibili.map(p => p.id);
+            const nomiRimossi = scontrino.value.filter(prod => idsNonDisponibili.includes(prod.idProdotto)).map(prod => prod.nome);
+            scontrino.value = scontrino.value.filter(prod => !idsNonDisponibili.includes(prod.idProdotto));
+            conto.value = scontrino.value.reduce((tot, prod) => tot + prod.prezzo, 0);
+
+            if (nomiRimossi.length > 0) {
+                alert('I seguenti prodotti non sono disponibili e sono stati rimossi: ' + nomiRimossi.join(', '));
+            }
+            return;
+        }
+
+        // Calcola le quantità per ogni prodotto nel nuovo ordine
+        const quantitaProdotti = {};
+        scontrino.value.forEach(prodotto => {
+            const id = prodotto.idProdotto;
+            quantitaProdotti[id] = (quantitaProdotti[id] || 0) + 1;
+        });
+
+        // Costruisci array per updateOrder nel formato richiesto [{ id, quantita }]
+        const arrayProdotti = Object.entries(quantitaProdotti).map(([id, quantita]) => ({
+            id: parseInt(id),
+            quantita: quantita
+        }));
+
+        // Usa la funzione updateOrder esistente
+        await orderStore.updateOrder(arrayProdotti, orderIdModaleRemoveSingleProduct.value);
+
+        // Stampa automaticamente lo scontrino modificato
+        try {
+            await orderStore.printModifiedOrder(orderIdModaleRemoveSingleProduct.value);
+            console.log('Scontrino dell\'ordine modificato stampato con successo');
+        } catch (printError) {
+            console.error('Errore durante la stampa dello scontrino modificato:', printError);
+            // Non bloccare il flusso per errori di stampa, mostra solo un avviso
+            alert('⚠️ Ordine modificato con successo, ma si è verificato un errore durante la stampa: ' + printError.message);
+        }
+
+        // Mostra la differenza di prezzo
+        const differenza = differenzaPrezzo.value;
+        let messaggioDifferenza = '';
+        if (differenza > 0) {
+            messaggioDifferenza = `\nDifferenza: +${differenza.toFixed(2)}€ (da pagare)`;
+        } else if (differenza < 0) {
+            messaggioDifferenza = `\nDifferenza: ${differenza.toFixed(2)}€ (da restituire)`;
+        } else {
+            messaggioDifferenza = '\nNessuna differenza di prezzo';
+        }
+
+        alert('Ordine modificato con successo!' + messaggioDifferenza + '\n\nScontrino stampato automaticamente.');
+
+        // Reset dello stato
+        resetModifyOrderState();
+
+    } catch (error) {
+        alert(`⚠️ Errore durante la modifica: ${error}`);
+    }
+}
+
+// Funzione per annullare la modifica ordine
+function annullaModificaOrdine() {
+    if (confirm('Sei sicuro di voler annullare la modifica? Tutti i cambiamenti andranno persi.')) {
+        resetModifyOrderState();
+    }
+}
+
+// Funzione per resettare lo stato di modifica
+function resetModifyOrderState() {
+    // Ripristina le quantità dei prodotti che erano nello scontrino
+    scontrino.value.forEach(prodotto => {
+        incrementaQuantita(prodotto.nome);
+    });
+
+    isModifyingOrder.value = false;
+    originalOrder.value = null;
+    originalOrderTotal.value = 0;
+    orderIdModaleRemoveSingleProduct.value = null;
+    scontrino.value = [];
+    conto.value = 0;
+    scontoTotale.value = false;
+    scontoParziale.value = false;
+    valoreScontoParziale.value = 0;
+    noteOrdine.value = "";
+    noteProdottiArray.value = [];
+}
 </script>
 
 <template>
@@ -387,14 +554,35 @@ function tornaIndietro() {
             </div>
             <div class="conto-economico">
                 <h3>Totale: {{ totaleScontato.toFixed(2) }}€</h3>
+                <div v-if="isModifyingOrder" class="differenza-prezzo">
+                    <p v-if="differenzaPrezzo > 0" style="color: red;">
+                        Differenza:<span class="big-number-difference"> +{{ differenzaPrezzo.toFixed(2) }}€</span> (da pagare)
+                    </p>
+                    <p v-else-if="differenzaPrezzo < 0" style="color: green;">
+                        Differenza: <span class="big-number-difference"> {{ differenzaPrezzo.toFixed(2) }}€</span> (da restituire)
+                    </p>
+                    <p v-else style="color: gray;">
+                        Nessuna differenza di prezzo
+                    </p>
+                </div>
             </div>
             <div class="pagamento">
                 <div class="button-paga-options">
-                    <button @click="inviaOrdine" :disabled="scontrino.length === 0" class="paga-button">Paga</button>
+                    <!-- Pulsante Paga normale (nascosto quando si modifica un ordine) -->
+                    <button v-if="!isModifyingOrder" @click="inviaOrdine" :disabled="scontrino.length === 0" class="paga-button">Paga</button>
+
+                    <!-- Pulsante Conferma Modifica (visibile solo quando si modifica un ordine) -->
+                    <button v-if="isModifyingOrder" @click="confermaModificaOrdineFinale" :disabled="scontrino.length === 0" class="paga-button modify-button">Conferma Modifica</button>
+
                     <button @click="openOption" :disabled="scontrino.length === 0" class="option-button"></button>
                 </div>
                 <div class="hidde-function-button">
-                    <button @click="annullaOrdine" class="button-mobile-device">Annulla ordine</button>
+                    <!-- Pulsante Annulla ordine normale (nascosto quando si modifica un ordine) -->
+                    <button v-if="!isModifyingOrder" @click="annullaOrdine" class="button-mobile-device">Annulla ordine</button>
+
+                    <!-- Pulsante Annulla modifica (visibile solo quando si modifica un ordine) -->
+                    <button v-if="isModifyingOrder" @click="annullaModificaOrdine" class="button-mobile-device cancel-modify-button">Annulla Modifica</button>
+
                     <button @click="stornaElementoDaOrdine" class="button-mobile-device">Modifica ordine</button>
                 </div>
             </div>
@@ -473,6 +661,18 @@ function tornaIndietro() {
             </div>
         </div>
     </div>
+
+    <!-- Modale modifica ordine -->
+    <div v-if="showModifyOrderModal" class="modal-overlay">
+        <div class="modal">
+            <p>Inserisci numero ordine da modificare</p>
+            <input type="text" id="ordineModificare" placeholder="Numero Ordine" />
+            <div class="modal-actions">
+                <button @click="showModifyOrderModal = false">Annulla</button>
+                <button @click="confermaModificaOrdine">Carica Ordine</button>
+            </div>
+        </div>
+    </div>
 </template>
 
 <style scoped>
@@ -533,6 +733,12 @@ function tornaIndietro() {
             text-align: center;
             position: sticky;
             bottom: 0;
+            .differenza-prezzo{
+                .big-number-difference{
+                    font-size: 1.5em;
+                    font-weight: bold;
+                }
+            }
             h3{
                 margin-top: 0;
                 margin-bottom: 0;
@@ -589,6 +795,22 @@ function tornaIndietro() {
                 border: 2px solid #888888;
                 cursor: not-allowed;
                 opacity: 0.7;
+            }
+
+            .modify-button {
+                background-color: #ff9800 !important;
+
+                &:hover {
+                    background-color: #f57c00 !important;
+                }
+            }
+
+            .cancel-modify-button {
+                background-color: #f44336 !important;
+
+                &:hover {
+                    background-color: #d32f2f !important;
+                }
             }
         }
     }

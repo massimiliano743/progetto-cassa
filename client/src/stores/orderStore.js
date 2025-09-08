@@ -2,8 +2,6 @@ import { defineStore } from 'pinia'
 import { createSocket, getSocketSync } from '@/socket'
 import { v4 as uuidv4 } from 'uuid'
 
-const socket = await getSocketSync();
-
 export const useOrderStore = defineStore('orderStore', {
     state: () => ({
         orders: [],
@@ -71,18 +69,31 @@ export const useOrderStore = defineStore('orderStore', {
                 });
             });
         },
-        async updateOrder(newOrder,id) {
+        async updateOrder(newOrder, id) {
             const socket = getSocketSync() || await createSocket();
             return new Promise((resolve, reject) => {
                 socket.emit('updateOrder', id, newOrder, (res) => {
                     if (!res || res.success === false) {
-                        const errorMsg = res?.error || 'Errore sconosciuto nella rimozione prodotto';
+                        const errorMsg = res?.error || 'Errore sconosciuto nella modifica ordine';
                         alert(`⚠️ Errore: ${errorMsg}`);
                         reject(errorMsg);
                         return;
                     }
                     console.log('res---', res);
                     this.loadOrders();
+                    resolve(res);
+                });
+            });
+        },
+        async printModifiedOrder(orderId) {
+            const socket = getSocketSync() || await createSocket();
+            return new Promise((resolve, reject) => {
+                socket.emit('print-modified-order', orderId, (res) => {
+                    if (!res || res.success === false) {
+                        const errorMsg = res?.error || 'Errore sconosciuto durante la stampa';
+                        reject(new Error(errorMsg));
+                        return;
+                    }
                     resolve(res);
                 });
             });
