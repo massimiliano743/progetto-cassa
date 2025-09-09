@@ -1,35 +1,40 @@
-console.log('Avvio backend:', Date.now());
-console.log('Caricamento express...');
-const express = require('express')
-console.log('Caricamento http...');
-const http = require('http')
-console.log('Caricamento socket.io...');
-const { Server } = require('socket.io')
-console.log('Caricamento cors...');
-const cors = require('cors')
-console.log('Caricamento better-sqlite3...');
-const Database = require('better-sqlite3')
-console.log('Caricamento path...');
-const path = require('path')
-console.log('Caricamento fs...');
 const fs = require('fs');
-console.log('Caricamento fs/promises...');
+const logFile = fs.createWriteStream('log-avvio.txt', { flags: 'a' });
+const log = (...args) => {
+  const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' ') + '\n';
+  logFile.write(msg);
+  console.log(...args);
+};
+log('Avvio backend:', Date.now());
+log('Caricamento express...', Date.now());
+const express = require('express')
+log('Caricamento http...', Date.now());
+const http = require('http')
+log('Caricamento socket.io...', Date.now());
+const { Server } = require('socket.io')
+log('Caricamento cors...', Date.now());
+const cors = require('cors')
+log('Caricamento better-sqlite3...', Date.now());
+const Database = require('better-sqlite3')
+log('Caricamento path...', Date.now());
+const path = require('path')
+log('Caricamento fs/promises...', Date.now());
 const fsp = require('fs/promises');
-console.log('Caricamento handlebars...');
+log('Caricamento handlebars...', Date.now());
 const handlebars = require('handlebars');
-console.log('Caricamento pdfkit...');
+log('Caricamento pdfkit...', Date.now());
 const PDFDocument = require('pdfkit');
-console.log('Caricamento puppeteer...');
+log('Caricamento puppeteer...', Date.now());
 const puppeteer = require('puppeteer');
-console.log('Caricamento child_process...');
+log('Caricamento child_process...', Date.now());
 const { exec, execSync } = require('child_process');
-console.log('Caricamento os...');
+log('Caricamento os...', Date.now());
 const os = require('os');
-console.log('Caricamento sharp...');
+log('Caricamento sharp...', Date.now());
 const sharp = require('sharp');
-console.log('Caricamento multer...');
+log('Caricamento multer...', Date.now());
 const multer = require('multer');
-console.log('Tutti i require completati:', Date.now());
+log('Tutti i require completati:', Date.now());
 
 const app = express()
 app.use(cors())
@@ -1702,8 +1707,8 @@ io.on('connection', socket => {
 
 const PORT = 3000;
 server.listen(PORT, () => {
-  console.log('Backend pronto:', Date.now());
-  console.log(`Backend: Server listening on port ${PORT}`);
+  log('Backend pronto:', Date.now());
+  log(`Backend: Server listening on port ${PORT}`);
 });
 
 function getOrderById(id) {
