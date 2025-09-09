@@ -1,5 +1,7 @@
 const fs = require('fs');
-const logFile = fs.createWriteStream('log-avvio.txt', { flags: 'a' });
+const path = require('path');
+// Scrive il log nella cartella dist del progetto (una cartella sopra rispetto a server/)
+const logFile = fs.createWriteStream(path.join(__dirname, '../dist/log-avvio.txt'), { flags: 'a' });
 const log = (...args) => {
   const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' ') + '\n';
   logFile.write(msg);
@@ -17,8 +19,6 @@ const cors = require('cors')
 log('Caricamento better-sqlite3...', Date.now());
 const Database = require('better-sqlite3')
 log('Caricamento path...', Date.now());
-const path = require('path')
-log('Caricamento fs/promises...', Date.now());
 const fsp = require('fs/promises');
 log('Caricamento handlebars...', Date.now());
 const handlebars = require('handlebars');
@@ -1649,7 +1649,7 @@ io.on('connection', socket => {
             }
 
             let logoBuffer = Buffer.alloc(0);
-            if (logoPath) {
+            if ( logoPath) {
                 try {
                     logoBuffer = await getLogoEscPosBuffer(logoPath);
                 } catch (e) {
