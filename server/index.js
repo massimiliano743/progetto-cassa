@@ -1,18 +1,35 @@
+console.log('Avvio backend:', Date.now());
+console.log('Caricamento express...');
 const express = require('express')
+console.log('Caricamento http...');
 const http = require('http')
+console.log('Caricamento socket.io...');
 const { Server } = require('socket.io')
+console.log('Caricamento cors...');
 const cors = require('cors')
+console.log('Caricamento better-sqlite3...');
 const Database = require('better-sqlite3')
+console.log('Caricamento path...');
 const path = require('path')
+console.log('Caricamento fs...');
 const fs = require('fs');
+console.log('Caricamento fs/promises...');
 const fsp = require('fs/promises');
+console.log('Caricamento handlebars...');
 const handlebars = require('handlebars');
+console.log('Caricamento pdfkit...');
 const PDFDocument = require('pdfkit');
+console.log('Caricamento puppeteer...');
 const puppeteer = require('puppeteer');
+console.log('Caricamento child_process...');
 const { exec, execSync } = require('child_process');
+console.log('Caricamento os...');
 const os = require('os');
+console.log('Caricamento sharp...');
 const sharp = require('sharp');
+console.log('Caricamento multer...');
 const multer = require('multer');
+console.log('Tutti i require completati:', Date.now());
 
 const app = express()
 app.use(cors())
@@ -1683,7 +1700,13 @@ io.on('connection', socket => {
         console.log('Server Socket.IO in ascolto su http://localhost:3000')
     })
 
-    function getOrderById(id) {
+const PORT = 3000;
+server.listen(PORT, () => {
+  console.log('Backend pronto:', Date.now());
+  console.log(`Backend: Server listening on port ${PORT}`);
+});
+
+function getOrderById(id) {
         return db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
     }
     app.get('/get-socket-ip', (req, res) => {
@@ -1691,11 +1714,6 @@ io.on('connection', socket => {
         res.json({ ip: 'localhost', port: 3000 });
     });
 
-
-const PORT = 3000;
-server.listen(PORT, () => {
-  console.log(`Backend: Server listening on port ${PORT}`);
-});
 
 
 function parseRecapOrdine(recapOrdine, db) {
