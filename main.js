@@ -1,6 +1,12 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
 const http = require('http');
+const log = require('electron-log');
+
+// Configura electron-log per il processo principale
+log.transports.file.resolvePathFn = () => path.join(__dirname, 'dist', 'main.log');
+// Sovrascrive console.log/warn/error per usare electron-log
+Object.assign(console, log.functions);
 
 const isProd = app.isPackaged;
 
@@ -100,12 +106,10 @@ function startServer() {
 app.whenReady().then(async () => {
   try {
     await startServer();
-    console.log('Electron: Attendo che il backend sia pronto su http://localhost:3000/get-socket-ip...');
-    await waitForBackendReady(30, 1000);
-    console.log('Electron: Backend pronto, apro la finestra.');
+    await waitForBackendReady();
     createWindow();
-  } catch (e) {
-    console.error('Electron: Errore durante l\'avvio:', e);
+  } catch (error) {
+    console.error('Errore fatale durante l\'avvio:', error);
     app.quit();
   }
 });
