@@ -45,7 +45,8 @@
       "target": [
         "nsis",
         "portable"
-      ]
+      ],
+      "console": true
     },
     "asar": false,
     "extraResources": [
