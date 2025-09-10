@@ -1,10 +1,12 @@
-const log = require('electron-log');
 const fs = require('fs');
 const path = require('path');
-
-// Configura electron-log per scrivere nel percorso desiderato
-log.transports.file.resolvePathFn = () => path.join(__dirname, '../dist/server.log');
-
+// Scrive il log nella cartella dist del progetto (una cartella sopra rispetto a server/)
+const logFile = fs.createWriteStream(path.join(__dirname, '../dist/log-avvio.txt'), { flags: 'a' });
+const log = (...args) => {
+  const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' ') + '\n';
+  logFile.write(msg);
+  console.log(...args);
+};
 log('Avvio backend:', Date.now());
 log('Caricamento express...', Date.now());
 const express = require('express')
