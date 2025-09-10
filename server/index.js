@@ -1,18 +1,34 @@
-const express = require('express')
-const http = require('http')
-const { Server } = require('socket.io')
-const cors = require('cors')
-const Database = require('better-sqlite3')
-const path = require('path')
 const fs = require('fs');
+const path = require('path');
+// Scrive il log nella cartella dist del progetto (una cartella sopra rispetto a server/)
+console.log('Avvio backend:', Date.now());
+console.log('Caricamento express...', Date.now());
+const express = require('express')
+console.log('Caricamento http...', Date.now());
+const http = require('http')
+console.log('Caricamento socket.io...', Date.now());
+const { Server } = require('socket.io')
+console.log('Caricamento cors...', Date.now());
+const cors = require('cors')
+console.log('Caricamento better-sqlite3...', Date.now());
+const Database = require('better-sqlite3')
+console.log('Caricamento path...', Date.now());
 const fsp = require('fs/promises');
+console.log('Caricamento handlebars...', Date.now());
 const handlebars = require('handlebars');
+console.log('Caricamento pdfkit...', Date.now());
 const PDFDocument = require('pdfkit');
+console.log('Caricamento puppeteer...', Date.now());
 const puppeteer = require('puppeteer');
+console.log('Caricamento child_process...', Date.now());
 const { exec, execSync } = require('child_process');
+console.log('Caricamento os...', Date.now());
 const os = require('os');
+console.log('Caricamento sharp...', Date.now());
 const sharp = require('sharp');
+console.log('Caricamento multer...', Date.now());
 const multer = require('multer');
+console.log('Tutti i require completati:', Date.now());
 
 const app = express()
 app.use(cors())
@@ -1627,7 +1643,7 @@ io.on('connection', socket => {
             }
 
             let logoBuffer = Buffer.alloc(0);
-            if (logoPath) {
+            if ( logoPath) {
                 try {
                     logoBuffer = await getLogoEscPosBuffer(logoPath);
                 } catch (e) {
@@ -1683,7 +1699,13 @@ io.on('connection', socket => {
         console.log('Server Socket.IO in ascolto su http://localhost:3000')
     })
 
-    function getOrderById(id) {
+const PORT = 3000;
+server.listen(PORT, () => {
+  console.log('Backend pronto:', Date.now());
+  console.log(`Backend: Server listening on port ${PORT}`);
+});
+
+function getOrderById(id) {
         return db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
     }
     app.get('/get-socket-ip', (req, res) => {
@@ -1691,11 +1713,6 @@ io.on('connection', socket => {
         res.json({ ip: 'localhost', port: 3000 });
     });
 
-
-const PORT = 3000;
-server.listen(PORT, () => {
-  console.log(`Backend: Server listening on port ${PORT}`);
-});
 
 
 function parseRecapOrdine(recapOrdine, db) {
