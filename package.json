@@ -7,6 +7,7 @@
   "dependencies": {
     "better-sqlite3": "^12.1.1",
     "cors": "^2.8.5",
+    "crypto-js": "^4.2.0",
     "escpos": "^3.0.0-alpha.6",
     "escpos-usb": "^3.0.0-alpha.4",
     "express": "^5.1.0",

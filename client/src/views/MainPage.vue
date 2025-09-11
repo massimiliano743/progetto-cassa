@@ -56,7 +56,8 @@ const deviceStore = useDeviceStore()
         display: flex;
         flex-direction: row;
         justify-content: center;
-        gap: 100px;
+        gap: 60px;
+        flex-wrap: wrap;
         button{
             width: 200px;
             height: 200px;

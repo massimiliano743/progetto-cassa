@@ -1141,146 +1141,112 @@ io.on('connection', socket => {
 
             let recap = order.recapOrdine;
             let currentProdotti = [];
+            const dbTransaction = db.transaction(() => {
+                // Parse del formato corrente (JSON o vecchio formato stringa)
+                try {
+                    currentProdotti = JSON.parse(recap);
+                } catch {
+                    // Fallback per vecchi ordini con formato stringa
+                    const entries = recap.split(',').map(p => p.trim()).filter(p => p);
+                    const prodottiMap = {};
 
-            // Parse del formato corrente (JSON o vecchio formato stringa)
-            try {
-                currentProdotti = JSON.parse(recap);
-            } catch {
-                // Fallback per vecchi ordini con formato stringa
-                const entries = recap.split(',').map(p => p.trim()).filter(p => p);
-                const prodottiMap = {};
+                    entries.forEach(entry => {
+                        const [productIdStr, prezzoStr] = entry.split(':');
+                        const productId = parseInt(productIdStr);
+                        const prezzo = parseFloat(prezzoStr);
+                        if (!isNaN(productId)) {
+                            if (!prodottiMap[productId]) {
+                                const prodottoDB = db.prepare('SELECT nome FROM prodotti WHERE id = ?').get(productId);
+                                prodottiMap[productId] = {
+                                    id: productId,
+                                    nome: prodottoDB ? prodottoDB.nome : `Prodotto #${productId}`,
+                                    prezzo: prezzo,
+                                    quantita: 1,
+                                    note: "" // Sempre vuote per ordini convertiti dal vecchio formato
+                                };
+                            } else {
+                                prodottiMap[productId].quantita += 1;
+                            }
+                        }
+                    });
 
-                entries.forEach(entry => {
-                    const [productIdStr, prezzoStr] = entry.split(':');
+                    currentProdotti = Object.values(prodottiMap);
+                }
+
+                // 1. Ripristina le quantità dei prodotti dell'ordine originale
+                const originalCounts = {};
+                currentProdotti.forEach(p => {
+                    originalCounts[p.id] = (originalCounts[p.id] || 0) + (p.quantita || 1);
+                });
+                for (const [productId, count] of Object.entries(originalCounts)) {
+                    db.prepare('UPDATE prodotti SET quantita = quantita + ? WHERE id = ?').run(count, productId);
+                }
+
+
+                const newQuantities = {};
+                if (Array.isArray(newOrder)) {
+                    newOrder.forEach(p => {
+                        newQuantities[p.id] = p.quantita;
+                    });
+                }
+
+                // 2. Controlla la disponibilità e sottrai le nuove quantità
+                const insufficientProducts = [];
+                const newProdottiArray = [];
+                let totaleNuovo = 0;
+
+                for (const productIdStr in newQuantities) {
                     const productId = parseInt(productIdStr);
-                    const prezzo = parseFloat(prezzoStr);
-                    if (!isNaN(productId)) {
-                        if (!prodottiMap[productId]) {
-                            const prodottoDB = db.prepare('SELECT nome FROM prodotti WHERE id = ?').get(productId);
-                            prodottiMap[productId] = {
-                                id: productId,
-                                nome: prodottoDB ? prodottoDB.nome : `Prodotto #${productId}`,
-                                prezzo: prezzo,
-                                quantita: 1,
-                                note: "" // Sempre vuote per ordini convertiti dal vecchio formato
-                            };
+                    const newQ = newQuantities[productIdStr];
+
+                    if (newQ > 0) {
+                        const prodottoDB = db.prepare('SELECT nome, prezzo, quantita FROM prodotti WHERE id = ?').get(productId);
+
+                        if (!prodottoDB || prodottoDB.quantita < newQ) {
+                            insufficientProducts.push({ id: productId, richiesti: newQ, disponibili: prodottoDB ? prodottoDB.quantita : 0 });
                         } else {
-                            prodottiMap[productId].quantita += 1;
-                        }
-                    }
-                });
+                            db.prepare('UPDATE prodotti SET quantita = quantita - ? WHERE id = ?').run(newQ, productId);
 
-                currentProdotti = Object.values(prodottiMap);
-            }
-
-            const newQuantities = {};
-            if (Array.isArray(newOrder)) {
-                newOrder.forEach(p => {
-                    newQuantities[p.id] = p.quantita;
-                });
-            }
-
-            // Calcola quantità correnti
-            const currentCounts = {};
-            currentProdotti.forEach(p => {
-                currentCounts[p.id] = (currentCounts[p.id] || 0) + (p.quantita || 1);
-            });
-
-            // ✅ PRIMA: Controlla disponibilità prodotti per eventuali incrementi
-            const insufficientProducts = [];
-            Object.entries(newQuantities).forEach(([productIdStr, newQ]) => {
-                const productId = parseInt(productIdStr);
-                const oldQ = currentCounts[productId] || 0;
-                const diff = newQ - oldQ;
-                if (diff > 0) {
-                    const prodotto = db.prepare('SELECT quantita FROM prodotti WHERE id = ?').get(productId);
-                    if (!prodotto || prodotto.quantita < diff) {
-                        insufficientProducts.push({ id: productId, richiesti: diff, disponibili: prodotto ? prodotto.quantita : 0 });
-                    }
-                }
-            });
-
-            if (insufficientProducts.length > 0) {
-                if (cb) cb({
-                    success: false,
-                    error: 'Quantità insufficienti per alcuni prodotti',
-                    dettagli: insufficientProducts
-                });
-                return;
-            }
-
-            // Calcola totale originale
-            let totaleOriginale = 0;
-            currentProdotti.forEach(p => {
-                totaleOriginale += (p.prezzo || 0) * (p.quantita || 1);
-            });
-
-            // Aggiorna le quantità dei prodotti nel database
-            Object.keys(newQuantities).forEach(productIdStr => {
-                const productId = parseInt(productIdStr);
-                const oldQ = currentCounts[productId] || 0;
-                const newQ = newQuantities[productId] || 0;
-                const diff = newQ - oldQ;
-                if (diff !== 0) {
-                    db.prepare('UPDATE prodotti SET quantita = quantita - ? WHERE id = ?').run(diff, productId);
-                }
-            });
-
-            // Crea il nuovo array di prodotti nel formato JSON
-            const newProdottiArray = [];
-            Object.entries(newQuantities).forEach(([productIdStr, newQ]) => {
-                const productId = parseInt(productIdStr);
-                if (newQ > 0) {
-                    // Trova il prodotto corrente per mantenere le sue proprietà
-                    const currentProdotto = currentProdotti.find(p => p.id == productId);
-                    if (currentProdotto) {
-                        // Mantieni le proprietà esistenti ma aggiorna la quantità
-                        for (let i = 0; i < newQ; i++) {
-                            newProdottiArray.push({
-                                id: currentProdotto.id,
-                                nome: currentProdotto.nome,
-                                prezzo: currentProdotto.prezzo,
-                                quantita: 1,
-                                note: currentProdotto.note || ""
-                            });
-                        }
-                    } else {
-                        // Se non è presente nei prodotti correnti, recupera dal DB
-                        const prodottoDB = db.prepare('SELECT nome, prezzo FROM prodotti WHERE id = ?').get(productId);
-                        if (prodottoDB) {
                             for (let i = 0; i < newQ; i++) {
                                 newProdottiArray.push({
                                     id: productId,
                                     nome: prodottoDB.nome,
                                     prezzo: prodottoDB.prezzo,
                                     quantita: 1,
-                                    note: ""
+                                    note: "" // Le note andrebbero gestite se necessario
                                 });
                             }
+                            totaleNuovo += prodottoDB.prezzo * newQ;
                         }
                     }
                 }
+
+
+                if (insufficientProducts.length > 0) {
+                    // Se ci sono prodotti insufficienti, la transazione farà un rollback automatico
+                    if (cb) cb({
+                        success: false,
+                        error: 'Quantità insufficienti per alcuni prodotti dopo il ripristino.',
+                        dettagli: insufficientProducts
+                    });
+                    return; // Interrompe l'esecuzione
+                }
+
+
+                // Aggiorna ordine con il nuovo formato JSON
+                db.prepare('UPDATE orders SET totale = ? WHERE id = ?').run(totaleNuovo, id);
+                const newRecapJson = JSON.stringify(newProdottiArray);
+                db.prepare('UPDATE orders SET recapOrdine = ? WHERE id = ?').run(newRecapJson, id);
+
+                const prodottiAggiornati = db.prepare('SELECT * FROM prodotti').all();
+                io.emit('product-list', prodottiAggiornati.map(p => {
+                    const cat = db.prepare('SELECT name, color FROM categories WHERE id = ?').get(p.tipologia);
+                    return { ...p, tipologia: cat ? cat.name : p.tipologia, colore: cat ? cat.color : null };
+                }));
+
+                if (cb) cb({ success: true, recap: newRecapJson, order, totaleNuovo });
             });
-
-            // Calcola nuovo totale
-            let totaleNuovo = 0;
-            newProdottiArray.forEach(p => {
-                totaleNuovo += (p.prezzo || 0) * (p.quantita || 1);
-            });
-
-            // Aggiorna ordine con il nuovo formato JSON
-            db.prepare('UPDATE orders SET totale = ? WHERE id = ?').run(totaleNuovo, id);
-            const newRecapJson = JSON.stringify(newProdottiArray);
-            db.prepare('UPDATE orders SET recapOrdine = ? WHERE id = ?').run(newRecapJson, id);
-
-            const prodottiAggiornati = db.prepare('SELECT * FROM prodotti').all();
-            io.emit('product-list', prodottiAggiornati.map(p => {
-                const cat = db.prepare('SELECT name, color FROM categories WHERE id = ?').get(p.tipologia);
-                return { ...p, tipologia: cat ? cat.name : p.tipologia, colore: cat ? cat.color : null };
-            }));
-
-            if (cb) cb({ success: true, recap: newRecapJson, order, totaleOriginale, totaleNuovo, differenza: totaleNuovo - totaleOriginale });
-            return { order, id };
+            dbTransaction();
         } catch (e) {
             if (cb) cb({ success: false, error: e.message });
         }

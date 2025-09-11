@@ -277,7 +277,6 @@ function incrementaQuantitaSelezionata(id) {
 
     const quantitaCorrente = Number(prodotto.quantita) || 0;
     const quantitàTotale = quantitaCorrente + quantitaAttuale;
-    //da rivedere questo, non torna con il controllo
     if (quantitaCorrente + inter[id] < quantitàTotale) {
         prodotto.quantita = quantitaCorrente + 1;
         inter[id]++;
@@ -300,7 +299,7 @@ function decrementaQuantitaSelezionata(id) {
         if (inter[id] == null) inter[id] = 0;
         inter[id]--;
 
-        if (inter[id] < 0) inter[id] = 0; // opzionale: non andare sotto zero
+        if (inter[id] < 0) inter[id] = 0;
     }
 
     console.log(`inter[${id}] = ${inter[id]}`);
@@ -432,14 +431,12 @@ async function confermaModificaOrdineFinale() {
             return;
         }
 
-        // Calcola le quantità per ogni prodotto nel nuovo ordine
         const quantitaProdotti = {};
         scontrino.value.forEach(prodotto => {
             const id = prodotto.idProdotto;
             quantitaProdotti[id] = (quantitaProdotti[id] || 0) + 1;
         });
 
-        // Costruisci array per updateOrder nel formato richiesto [{ id, quantita }]
         const arrayProdotti = Object.entries(quantitaProdotti).map(([id, quantita]) => ({
             id: parseInt(id),
             quantita: quantita
@@ -471,8 +468,8 @@ async function confermaModificaOrdineFinale() {
 
         alert('Ordine modificato con successo!' + messaggioDifferenza + '\n\nScontrino stampato automaticamente.');
 
-        // Reset dello stato
-        resetModifyOrderState();
+        // Reset dello scontrino
+        clearScontrino();
 
     } catch (error) {
         alert(`⚠️ Errore durante la modifica: ${error}`);
@@ -488,11 +485,49 @@ function annullaModificaOrdine() {
 
 // Funzione per resettare lo stato di modifica
 function resetModifyOrderState() {
-    // Ripristina le quantità dei prodotti che erano nello scontrino
-    scontrino.value.forEach(prodotto => {
-        incrementaQuantita(prodotto.nome);
-    });
+    // Ripristina le quantità dei prodotti che sono stati aggiunti o rimossi durante la modifica
+    if (isModifyingOrder.value && originalOrder.value) {
+        const originalQuantities = {};
+        originalOrder.value.prodotti.forEach(p => {
+            originalQuantities[p.id] = (originalQuantities[p.id] || 0) + (p.quantita || 1);
+        });
 
+        const currentQuantities = {};
+        scontrino.value.forEach(p => {
+            currentQuantities[p.idProdotto] = (currentQuantities[p.idProdotto] || 0) + 1;
+        });
+
+        const allProductIds = new Set([
+            ...Object.keys(originalQuantities).map(id => parseInt(id)),
+            ...Object.keys(currentQuantities).map(id => parseInt(id))
+        ]);
+
+        allProductIds.forEach(id => {
+            const originalQty = originalQuantities[id] || 0;
+            const currentQty = currentQuantities[id] || 0;
+            const diff = currentQty - originalQty;
+
+            if (diff > 0) { // Prodotti aggiunti allo scontrino
+                const prodotto = prodottoStore.prodotti.find(p => p.id === id);
+                if (prodotto) {
+                    for (let i = 0; i < diff; i++) {
+                        incrementaQuantita(prodotto.nome);
+                    }
+                }
+            } else if (diff < 0) { // Prodotti rimossi dallo scontrino
+                const prodotto = prodottoStore.prodotti.find(p => p.id === id);
+                if (prodotto) {
+                    for (let i = 0; i < Math.abs(diff); i++) {
+                        decrementaQuantita(prodotto.nome);
+                    }
+                }
+            }
+        });
+    }
+    clearScontrino();
+}
+function clearScontrino()
+{
     isModifyingOrder.value = false;
     originalOrder.value = null;
     originalOrderTotal.value = 0;
@@ -553,7 +588,11 @@ function resetModifyOrderState() {
                 <div v-if="scontrino.length === 0">Nessun prodotto aggiunto</div>
             </div>
             <div class="conto-economico">
-                <h3>Totale: {{ totaleScontato.toFixed(2) }}€</h3>
+                <div class="clear-scontrino">
+                    <h3>Totale: {{ totaleScontato.toFixed(2) }}€</h3>
+                    <button @click="clearScontrino" :disabled="scontrino.length === 0" class="option-clear"></button>
+
+                </div>
                 <div v-if="isModifyingOrder" class="differenza-prezzo">
                     <p v-if="differenzaPrezzo > 0" style="color: red;">
                         Differenza:<span class="big-number-difference"> +{{ differenzaPrezzo.toFixed(2) }}€</span> (da pagare)
@@ -733,6 +772,26 @@ function resetModifyOrderState() {
             text-align: center;
             position: sticky;
             bottom: 0;
+            .clear-scontrino{
+                display: flex;
+                flex-direction: row;
+                justify-content: space-between;
+                align-items: center;
+                gap: 10px;
+                .option-clear{
+                    background-image: url("data:image/svg+xml,%3Csvg width='40px' height='40px' viewBox='0 0 48.00 48.00' fill='none' xmlns='http://www.w3.org/2000/svg' transform='matrix(1, 0, 0, 1, 0, 0)' stroke=''%3E%3Cg id='SVGRepo_bgCarrier' stroke-width='0'%3E%3C/g%3E%3Cg id='SVGRepo_tracerCarrier' stroke-linecap='round' stroke-linejoin='round' stroke='%23CCCCCC' stroke-width='0.576'%3E%3C/g%3E%3Cg id='SVGRepo_iconCarrier'%3E%3Crect width='48' height='48' fill='white' fill-opacity='0.01'%3E%3C/rect%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M20 5.91396H28V13.914H43V21.914H5V13.914H20V5.91396Z' stroke='%23000000' stroke-width='2.832' stroke-linecap='round' stroke-linejoin='round'%3E%3C/path%3E%3Cpath d='M8 40H40V22H8V40Z' fill='%2342b883' stroke='%23000000' stroke-width='2.832' stroke-linejoin='round'%3E%3C/path%3E%3Cpath d='M16 39.8975V33.914' stroke='white' stroke-width='2.832' stroke-linecap='round' stroke-linejoin='round'%3E%3C/path%3E%3Cpath d='M24 39.8975V33.8975' stroke='white' stroke-width='2.832' stroke-linecap='round' stroke-linejoin='round'%3E%3C/path%3E%3Cpath d='M32 39.8975V33.914' stroke='white' stroke-width='2.832' stroke-linecap='round' stroke-linejoin='round'%3E%3C/path%3E%3Cpath d='M12 40H36' stroke='%23000000' stroke-width='2.832' stroke-linecap='round' stroke-linejoin='round'%3E%3C/path%3E%3C/g%3E%3C/svg%3E");
+                    background-repeat: no-repeat;
+                    width: 60px;
+                    height: 40px;
+                    background-position: center;
+                    background-color: transparent;
+                    border: 3px solid #42b883;
+                    &:hover {
+                        background-color: #42b883;
+                    }
+                }
+
+            }
             .differenza-prezzo{
                 .big-number-difference{
                     font-size: 1.5em;
@@ -776,7 +835,7 @@ function resetModifyOrderState() {
             }
             button{
                 width: 100%;
-                height: 50px;
+                height: 40px;
                 font-size: 1.2rem;
                 font-weight: bold;
                 color: white;
@@ -784,17 +843,11 @@ function resetModifyOrderState() {
                 border: none;
                 cursor: pointer;
                 transition: background-color 0.3s ease;
+                padding: 4px;
 
                 &:hover {
                     background-color: #35495e;
                 }
-            }
-            button:disabled {
-                background-color: #cccccc;
-                color: #888888;
-                border: 2px solid #888888;
-                cursor: not-allowed;
-                opacity: 0.7;
             }
 
             .modify-button {
@@ -812,6 +865,13 @@ function resetModifyOrderState() {
                     background-color: #d32f2f !important;
                 }
             }
+        }
+        button:disabled {
+            background-color: #cccccc;
+            color: #888888;
+            border: 2px solid #888888;
+            cursor: not-allowed;
+            opacity: 0.7;
         }
     }
 

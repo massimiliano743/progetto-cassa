@@ -87,6 +87,7 @@ onMounted(() => {
     justify-content: center;
     align-items: center;
     z-index: 2000;
+    overflow-y: scroll;
 }
 .modal {
     background: white;

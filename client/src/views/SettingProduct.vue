@@ -469,7 +469,7 @@ function updatePrinterStatus(message, color) {
     max-width: 1280px;
     min-width: 800px;
     margin: 0 auto;
-    padding: 2rem;
+    padding: 0 2rem;
     text-align: center;
 }
 

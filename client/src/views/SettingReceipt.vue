@@ -39,7 +39,7 @@ async function uploadImage() {
     }
 }
 
-const testText = ref('Testo di esempio')
+const testText = ref('....')
 const fontFamily = ref('Arial')
 const fontSize = ref(24)
 const fontColor = ref('#000000')
@@ -177,10 +177,11 @@ function tornaIndietro() {
         <!-- Altre configurazioni qui -->
         <div class="receipt-text-config">
             <h2>Configura Testo Scontrino</h2>
+            <div class="text-image">
+                <div class="text">Testo:</div>
+                <textarea v-model="testText" type="text" rows="4" cols="50" placeholder="Scrivi qui il testo..." />
+            </div>
             <div class="config-form">
-                <label>Testo:
-                    <input v-model="testText" type="text" placeholder="Scrivi qui il testo..." />
-                </label>
                 <label>Font:
                     <select v-model="fontFamily">
                         <option v-for="font in fontFamilies" :key="font" :value="font">{{ font }}</option>
@@ -223,96 +224,121 @@ function tornaIndietro() {
 </template>
 
 <style>
-
 .receipt-config-page {
     max-width: 800px;
     margin: 0 auto;
-    padding: 2rem;
+    padding: 5px 2rem;
     background: #f8f8f8;
     border-radius: 8px;
+
+    h1 {
+        font-size: 2.5em;
+        margin-top: 5px;
+    }
+
+    .image-upload-section {
+        display: flex;
+        gap: 2rem;
+        align-items: flex-start;
+
+        .text {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            .loader {
+                display: inline-block;
+                width: 16px;
+                height: 16px;
+                border: 2px solid #ccc;
+                border-top: 2px solid #2196F3;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+                margin-right: 8px;
+            }
+            @keyframes spin {
+                0% {
+                    transform: rotate(0deg);
+                }
+                100% {
+                    transform: rotate(360deg);
+                }
+            }
+            .image-preview {
+                margin-top: 1rem;
+                border: 1px solid #ccc;
+                border-radius: 8px;
+                padding: 0.5rem;
+                background: #fff;
+                max-width: 200px;
+                img {
+                    max-width: 100%;
+                    border-radius: 8px;
+                }
+            }
+        }
+    }
+
+    .receipt-text-config {
+        margin-top: 2rem;
+        padding: 1rem;
+        background: #fff;
+        border-radius: 8px;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        .text-image{
+            display: flex;
+            flex-direction: row;
+            margin-bottom: 1rem;
+            .text{
+                margin-right: 1rem;
+                font-size: 1.5rem;
+                font-weight: 600;
+                align-self: start;
+                padding-top: 0.5rem;
+            }
+        }
+
+        .config-form {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 1rem;
+            label {
+                display: flex;
+                flex-direction: column;
+                font-weight: 500;
+            }
+            button {
+                grid-column: span 2;
+                padding: 0.75rem;
+                background: #2196F3;
+                color: #fff;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                transition: background 0.3s;
+            }
+            button:hover {
+                background: #1976D2;
+            }
+        }
+        .text-preview {
+            margin-top: 1rem;
+            padding: 1rem;
+            border: 1px solid #2196F3;
+            border-radius: 4px;
+            background: #f0f8ff;
+            font-size: 1.2rem;
+        }
+
+        .canvas-preview {
+            margin-top: 1rem;
+            img {
+                max-width: 100%;
+                border-radius: 8px;
+            }
+        }
+    }
 }
-.image-upload-section {
-    display: flex;
-    gap: 2rem;
-    align-items: flex-start;
-    margin-top: 2rem;
-}
-.text {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-}
-.image-preview {
-    margin-top: 1rem;
-    border: 1px solid #ccc;
-    border-radius: 8px;
-    padding: 0.5rem;
-    background: #fff;
-    max-width: 200px;
-}
-.image-preview img {
-    max-width: 100%;
-    border-radius: 8px;
-}
-.loader {
-    display: inline-block;
-    width: 16px;
-    height: 16px;
-    border: 2px solid #ccc;
-    border-top: 2px solid #2196F3;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-    margin-right: 8px;
-}
-@keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-}
-.receipt-text-config {
-    margin-top: 2rem;
-    padding: 1rem;
-    background: #fff;
-    border-radius: 8px;
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-}
-.config-form {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1rem;
-}
-.config-form label {
-    display: flex;
-    flex-direction: column;
-    font-weight: 500;
-}
-button {
-    grid-column: span 2;
-    padding: 0.75rem;
-    background: #2196F3;
-    color: #fff;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background 0.3s;
-}
-button:hover {
-    background: #1976D2;
-}
-.text-preview {
-    margin-top: 1rem;
-    padding: 1rem;
-    border: 1px solid #2196F3;
-    border-radius: 4px;
-    background: #f0f8ff;
-    font-size: 1.2rem;
-}
-.canvas-preview {
-    margin-top: 1rem;
-}
-.canvas-preview img {
-    max-width: 100%;
-    border-radius: 8px;
-}
+
 </style>
 
 
