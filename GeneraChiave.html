@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Chiave compatta con data</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 20px auto; padding: 16px; line-height:1.5; }
+    h1 { font-size: 1.4rem; margin-bottom: 12px; }
+    .card { border:1px solid #ddd; padding:16px; border-radius:8px; margin-bottom:20px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+    label { display:block; font-weight:600; margin-top:8px; }
+    input, button { width:100%; padding:10px; margin-top:6px; border-radius:6px; border:1px solid #ccc; box-sizing:border-box; font-size:1rem; }
+    button { background:#0b5cff; color:#fff; border:none; cursor:pointer; font-weight:600; transition:0.2s; }
+    button:hover { background:#0947c9; }
+    pre { background:#f9f9f9; border:1px solid #eee; padding:10px; border-radius:6px; }
+  </style>
+</head>
+<body>
+<h1>Chiave criptata compatta (15–18 caratteri)</h1>
+
+<div class="card">
+  <label for="dateInput">Seleziona la data</label>
+  <input id="dateInput" type="date" />
+  <button id="genBtn">Genera chiave</button>
+</div>
+
+<div class="card">
+  <label>Chiave generata</label>
+  <input id="outKey" readonly />
+  <button id="copyBtn">Copia chiave</button>
+</div>
+
+<div class="card">
+  <label for="inKey">Chiave da decodificare</label>
+  <input id="inKey" />
+  <button id="decodeBtn">Estrai data</button>
+  <label>Data estratta</label>
+  <pre id="result">-</pre>
+</div>
+
+<script>
+  // ======================
+  // --- Base62 helpers con BigInt ---
+  const base62chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+  function toBase62Big(n) {
+    n = BigInt(n);
+    if (n === 0n) return "0";
+    let s = "";
+    while (n > 0n) {
+      const r = n % 62n;
+      s = base62chars[Number(r)] + s;
+      n = n / 62n;
+    }
+    return s;
+  }
+
+  function fromBase62Big(s) {
+    let n = 0n;
+    for (let c of s) {
+      const idx = base62chars.indexOf(c);
+      if (idx < 0) throw new Error("Carattere non valido");
+      n = n * 62n + BigInt(idx);
+    }
+    return n;
+  }
+
+  // --- Hash di controllo (2 cifre) ---
+  function tinyHash(str) {
+    let h = 0;
+    for (let c of str) h = (h * 31 + c.charCodeAt(0)) % 100;
+    return h.toString().padStart(2, "0");
+  }
+
+  // ======================
+  // --- Generazione ---
+  function generateKey(dateStr) {
+    const d = dateStr.replaceAll("-", "");
+    if (!/^\d{8}$/.test(d)) throw new Error("Data non valida (usa YYYY-MM-DD)");
+
+    const salt = Math.floor(Math.random() * 9999).toString().padStart(4, "0");
+    const raw = d + salt; // 12 cifre
+    const hash = tinyHash(raw); // 2 cifre
+    const fullNumStr = (raw + hash).padStart(14, "0"); // sempre 14 cifre
+    const numBig = BigInt(fullNumStr);
+    return toBase62Big(numBig); // chiave pura senza padding
+  }
+
+  // ======================
+  // --- Decodifica ---
+  function extractDate(key) {
+    const numBig = fromBase62Big(key);
+    const numStr = numBig.toString().padStart(14, "0"); // sempre 14 cifre
+    const raw = numStr.slice(0, 12); // YYYYMMDD + salt
+    const h = numStr.slice(12, 14);
+    if (tinyHash(raw) !== h) throw new Error("Chiave non valida");
+    const dateStr = raw.slice(0, 8);
+    return dateStr.slice(0,4) + "-" + dateStr.slice(4,6) + "-" + dateStr.slice(6,8);
+  }
+
+  // ======================
+  // --- UI Events ---
+  document.getElementById("genBtn").onclick = () => {
+    const dateVal = document.getElementById("dateInput").value;
+    if (!dateVal) return alert("Inserisci una data");
+    try {
+      const key = generateKey(dateVal);
+      document.getElementById("outKey").value = key;
+    } catch (e) {
+      alert("Errore: " + e.message);
+    }
+  };
+
+  document.getElementById("copyBtn").onclick = async () => {
+    const k = document.getElementById("outKey").value;
+    if (!k) return alert("Nessuna chiave da copiare");
+    await navigator.clipboard.writeText(k);
+    alert("Chiave copiata negli appunti");
+  };
+
+  document.getElementById("decodeBtn").onclick = () => {
+    const k = document.getElementById("inKey").value.trim();
+    if (!k) return alert("Inserisci una chiave");
+    try {
+      const date = extractDate(k);
+      document.getElementById("result").textContent = date;
+    } catch (e) {
+      document.getElementById("result").textContent = "Errore: " + e.message;
+    }
+  };
+</script>
+</body>
+</html>

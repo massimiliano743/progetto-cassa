@@ -7,9 +7,11 @@ import SettingEconomics from "@/views/SettingEconomics.vue";
 import PayDesk from "@/views/PayDesk.vue";
 import SelectDb from "@/views/SelectDb.vue";
 import SettingReceipt from "@/views/SettingReceipt.vue";
+import Auth from "@/views/Auth.vue";
 
 const routes = [
-    {path: '/', name: 'Home', component: HomePage},
+    {path: '/', name: 'Auth', component: Auth},
+    {path: '/home', name: 'Home', component: HomePage},
     {path: '/db', name: 'SelectDb', component: SelectDb},
     {path: '/main/', name: 'MainPage', component: MainPage},
     {path: '/setting-receipt/', name: 'SettingReceipt', component: SettingReceipt},

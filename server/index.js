@@ -1512,6 +1512,67 @@ io.on('connection', socket => {
         console.log('Nuovo prodotto ricevuto:', product)
         socket.broadcast.emit('product-modify', product);
     })
+    socket.on('validate-license', (key, callback) => {
+        console.log('Validazione licenza tentata con dati:', key);
+
+        try {
+            // Provo a estrarre la data dalla licenza
+            let data = extractDateSafe(key.numero_licenza);
+            if (data) {
+                callback({ success: true, data: data });
+            } else {
+                callback({ success: false, message: 'Licenza non valida' });
+            }
+        } catch (e) {
+            // Qualsiasi errore interno viene catturato
+            console.error('Errore nella validazione licenza:', e);
+            callback({ success: false, message: 'Licenza non valida' });
+        }
+    });
+
+// Funzione wrapper che cattura eventuali errori
+    function extractDateSafe(key) {
+        try {
+            return extractDate(key);
+        } catch {
+            return null; // se c'è un errore restituisce null
+        }
+    }
+
+// Funzione originale
+    function extractDate(key) {
+        const numBig = fromBase62Big(key);
+        const numStr = numBig.toString().padStart(14, "0"); // sempre 14 cifre
+        const raw = numStr.slice(0, 12); // YYYYMMDD + salt
+        const h = numStr.slice(12, 14);
+        if (tinyHash(raw) !== h) throw new Error("Chiave non valida");
+        const dateStr = raw.slice(0, 8);
+        return dateStr.slice(0, 4) + "-" + dateStr.slice(4, 6) + "-" + dateStr.slice(6, 8);
+    }
+
+// Funzione originale
+    const base62chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    function fromBase62Big(s) {
+        try {
+            let n = 0n;
+            for (let c of s) {
+                const idx = base62chars.indexOf(c);
+                if (idx < 0) throw new Error("Carattere non valido");
+                n = n * 62n + BigInt(idx);
+            }
+            return n;
+        } catch {
+            // In caso di errore ritorno null
+            return null;
+        }
+    }
+
+    // --- Hash di controllo (2 cifre) ---
+    function tinyHash(str) {
+        let h = 0;
+        for (let c of str) h = (h * 31 + c.charCodeAt(0)) % 100;
+        return h.toString().padStart(2, "0");
+    }
 
     socket.on('login', (data, callback) => {
         console.log('log-in tentato con dati:', data);
