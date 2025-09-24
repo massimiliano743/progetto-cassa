@@ -12,42 +12,49 @@ const router = useRouter();
 const deviceStore = useDeviceStore();
 const prodottoStore = useProdottoStore();
 
+const LICENSE_KEY = 'app_license';
+
 onMounted(() => {
     console.log('Auth.vue montato!');
-    hasValidCookie();
+    hasValidLicense();
 
 });
-function hasValidCookie() {
-    // document.cookie restituisce solo i cookie attivi (non scaduti)
-    const cookies = document.cookie.split('; ').filter(c => c); // rimuove stringhe vuote
-    if(cookies.length > 0){
-        console.log('Cookie attivo trovato, reindirizzamento a Home');
-        router.push({ name: 'Home' });
+function hasValidLicense() {
+    try {
+        const raw = localStorage.getItem(LICENSE_KEY);
+        if (!raw) return false;
+        const data = JSON.parse(raw);
+        const expiresAt = new Date(data.expiresAt);
+        if (Number.isNaN(expiresAt.getTime())) {
+            localStorage.removeItem(LICENSE_KEY);
+            return false;
+        }
+        if (expiresAt > new Date()) {
+            console.log('Licenza valida trovata in localStorage, reindirizzamento a Home');
+            router.push({ name: 'Home' });
+            return true;
+        } else {
+            console.log('Licenza scaduta in localStorage, rimozione');
+            localStorage.removeItem(LICENSE_KEY);
+            return false;
+        }
+    } catch (e) {
+        console.warn('Licenza non valida in localStorage, rimozione');
+        localStorage.removeItem(LICENSE_KEY);
+        return false;
     }
 }
 
-// Funzione per gestire cookie senza librerie
-function setLicenseCookie(nome, valore, scadenza) {
-    const expireDate = new Date(scadenza);
+function saveLicenseToStorage(value, expiresAtISO) {
+    const expiresAt = new Date(expiresAtISO);
     const now = new Date();
-
-    // Se la data di scadenza è già passata → elimina cookie subito
-    if (expireDate <= now) {
-        document.cookie = `${nome}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/`;
-        console.log(`Cookie "${nome}" eliminato perché scaduto`);
+    if (Number.isNaN(expiresAt.getTime()) || expiresAt <= now) {
+        console.log('Licenza non salvata perché scaduta o data non valida');
         return false;
     }
-
-    const cookieEsistente = document.cookie
-        .split('; ')
-        .find(row => row.startsWith(nome + '='));
-
-    if (cookieEsistente) {
-        console.log('Cookie esistente, reindirizzamento a Home');
-    } else {
-        document.cookie = `${nome}=${valore}; expires=${expireDate.toUTCString()}; path=/`;
-        console.log(`Cookie "${nome}" impostato correttamente`);
-    }
+    const payload = { value, expiresAt: expiresAt.toISOString() };
+    localStorage.setItem(LICENSE_KEY, JSON.stringify(payload));
+    console.log('Licenza salvata in localStorage con scadenza', payload.expiresAt);
     return true;
 }
 
@@ -64,14 +71,13 @@ async function handleLicese() {
             if (response.success) {
                 console.log('Licenza valida, procedi con la registrazione del dispositivo');
 
-                // Gestione cookie
-                let cookieValid = setLicenseCookie(numero_licenza.value, numero_licenza.value, response.data);
+                // Salvataggio licenza persistente
+                const saved = saveLicenseToStorage(numero_licenza.value, response.data);
 
-                // Esempio di redirect dopo validazione
                 console.log('Redirect a Home');
-                if(cookieValid){
+                if (saved) {
                     router.push({ name: 'Home' });
-                }else{
+                } else {
                     authError.value = 'Licenza scaduta, inserire una licenza valida';
                 }
             } else {

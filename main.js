@@ -73,12 +73,50 @@ function startServer() {
       console.log('Electron: Cambio working directory a:', serverCwd);
       process.chdir(serverCwd);
 
-      // Aggiungi il percorso dei node_modules dell'app ai module paths
-      if (isProd) {
-        const appNodeModulesPath = path.join(__dirname, 'node_modules');
-        console.log('Electron: Aggiunto module path:', appNodeModulesPath);
-        module.paths.unshift(appNodeModulesPath);
+      // Forza la risoluzione dei moduli nativi dalla root dell'app (per evitare mismatch ABI)
+      const Module = require('module');
+      const originalResolveFilename = Module._resolveFilename;
+      const appNodeModulesPath = isProd
+        ? path.join(process.resourcesPath)
+        : path.join(__dirname, 'node_modules');
+
+      // Aggiunge il path dei node_modules della root ai percorsi di risoluzione
+      try {
+        const rootNodeModules = isProd
+          ? path.join(process.resourcesPath, 'app', 'node_modules')
+          : path.join(__dirname, 'node_modules');
+        // Prepara NODE_PATH e aggiorna i percorsi globali
+        process.env.NODE_PATH = [rootNodeModules, process.env.NODE_PATH || ''].filter(Boolean).join(path.delimiter);
+        Module._initPaths && Module._initPaths();
+        // Inserisce anche nei module.paths correnti
+        if (!module.paths.includes(rootNodeModules)) {
+          module.paths.unshift(rootNodeModules);
+        }
+      } catch (e) {
+        console.warn('Electron: impossibile impostare NODE_PATH:', e.message);
       }
+
+      // Elenco dei moduli nativi da forzare dalla root
+      const nativePreferred = new Set(['better-sqlite3', 'sharp', 'usb']);
+      Module._resolveFilename = function(request, parent, isMain, options) {
+        if (nativePreferred.has(request)) {
+          const candidate = path.join(__dirname, 'node_modules', request);
+          try {
+            return originalResolveFilename.call(this, candidate, parent, isMain, options);
+          } catch (_) {
+            // In produzione, i percorsi differiscono all'interno delle risorse
+            if (isProd) {
+              const prodCandidate = path.join(process.resourcesPath, 'app', 'node_modules', request);
+              try {
+                return originalResolveFilename.call(this, prodCandidate, parent, isMain, options);
+              } catch (_) {
+                // fallback default
+              }
+            }
+          }
+        }
+        return originalResolveFilename.call(this, request, parent, isMain, options);
+      };
 
       // Richiede ed esegue il server nel processo corrente
       delete require.cache[require.resolve(serverPath)];
