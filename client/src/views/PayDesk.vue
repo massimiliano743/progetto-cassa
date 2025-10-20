@@ -540,6 +540,30 @@ function clearScontrino()
     noteOrdine.value = "";
     noteProdottiArray.value = [];
 }
+
+const scontrinoAggregato = computed(() => {
+    const aggregato = {};
+    scontrino.value.forEach(prodotto => {
+        const key = prodotto.idProdotto || prodotto.nome;
+        if (!aggregato[key]) {
+            aggregato[key] = {
+                ...prodotto,
+                quantita: 1
+            };
+        } else {
+            aggregato[key].quantita++;
+        }
+    });
+    return Object.values(aggregato);
+});
+
+function rimuoviProdottoAggregato(key) {
+    // Trova l'indice del primo prodotto con quel nome/id
+    const index = scontrino.value.findIndex(p => (p.idProdotto || p.nome) === key);
+    if (index !== -1) {
+        rimuoviProdottoScontrino(index);
+    }
+}
 </script>
 
 <template>
@@ -578,10 +602,12 @@ function clearScontrino()
             <div class="prodotti">
                 <h2>Scontrino</h2>
                 <div v-if="scontrino.length > 0">
-                    <div v-for="(prodotto, index) in scontrino" :key="index">
+                    <div v-for="prodotto in scontrinoAggregato" :key="prodotto.idProdotto || prodotto.nome">
                         <div class="prodotto-remove-scontrino">
-                            <div class="prodotto">{{ prodotto.nome }}</div><div class="prodotto">{{ prodotto.prezzo }}€</div>
-                            <div class="remove-single-product" @click="rimuoviProdottoScontrino(index)"></div>
+                            <div class="prodotto">{{ prodotto.nome }}</div>
+                            <div class="prodotto">{{ prodotto.prezzo }}€ </div>
+                            <div >x{{ prodotto.quantita >= 1 ? prodotto.quantita : ''}}</div>
+                            <div class="remove-single-product" @click="rimuoviProdottoAggregato(prodotto.idProdotto || prodotto.nome)"></div>
                         </div>
                     </div>
                 </div>
