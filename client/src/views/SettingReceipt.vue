@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import {useRouter} from "vue-router";
 const router = useRouter()
 
@@ -148,6 +148,33 @@ async function uploadCanvasImage(dataUrl) {
         isUploading.value = false
     }
 }
+
+const printSummaryReceipt = ref(false)
+
+onMounted(async () => {
+    try {
+        const res = await fetch(`http://${urlServer}:3000/api/print-summary-receipt`)
+        if (res.ok) {
+            const data = await res.json()
+            printSummaryReceipt.value = !!data.value
+        }
+    } catch (e) {
+        // errore silenzioso
+    }
+})
+
+async function updatePrintSummaryReceipt() {
+    try {
+        await fetch(`http://${urlServer}:3000/api/print-summary-receipt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: printSummaryReceipt.value })
+        })
+    } catch (e) {
+        alert('Errore nel salvataggio della preferenza!')
+    }
+}
+
 function tornaIndietro() {
     router.back()
 }
@@ -160,6 +187,13 @@ function tornaIndietro() {
     </div>
     <div class="receipt-config-page">
         <h1>Configurazione Scontrino</h1>
+        <!-- Checkbox per stampa riepilogativo -->
+        <div style="margin-bottom: 1.5rem;">
+            <label>
+                <input type="checkbox" v-model="printSummaryReceipt" @change="updatePrintSummaryReceipt" />
+                Stampa scontrino riepilogativo
+            </label>
+        </div>
         <!-- Placeholder per future configurazioni -->
         <div class="image-upload-section">
             <div class="text">
@@ -340,6 +374,3 @@ function tornaIndietro() {
 }
 
 </style>
-
-
-

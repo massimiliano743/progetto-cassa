@@ -40,6 +40,27 @@ const io = new Server(server, {
         origin: '*',
     }
 })
+const APP_CONFIG_PATH = path.join(__dirname, 'config.json');
+function readAppConfig() {
+    try {
+        return JSON.parse(fs.readFileSync(APP_CONFIG_PATH, 'utf-8'));
+    } catch {
+        return { printSummaryReceipt: false };
+    }
+}
+const PREAMBOLO_STAMPA = Buffer.from([0x1B,0x40, 0x1B,0x32, 0x0A,0x0A]); // ESC @, ESC 2, LF, LF
+
+function writeAppConfig(partial) {
+    const current = readAppConfig();
+    const updated = { ...current, ...partial };
+    fs.writeFileSync(APP_CONFIG_PATH, JSON.stringify(updated, null, 2), 'utf-8');
+    return updated;
+}
+
+function getPrintSummarySetting() {
+    const cfg = readAppConfig();
+    return !!cfg.printSummaryReceipt;
+}
 
 // ================== SISTEMA DI STAMPA TERMICA UNIVERSALE ==================
 const PRINTER_CONFIG_PATH = path.join(__dirname, 'stampante-selezionata.json');
@@ -929,24 +950,26 @@ io.on('connection', socket => {
                     bufferUnico = Buffer.concat([bufferUnico, logoBuffer, contentCat]);
                 }
                 // Stampa anche lo scontrino riepilogativo dell'ordine
-                const datiScontrinoRiepilogo = {
-                    numeroScontrino: info.lastInsertRowid,
-                    dataOra: order.timestamp,
-                    titoloAzienda: NOME_AZIENDA,
-                    sottotitoloAzienda: 'Riepilogo Ordine',
-                    prodotti: prodotti.map(p => ({
-                        nome: p.nome,
-                        quantita: p.quantita,
-                        prezzo: p.prezzo,
-                        totale: Number(p.prezzo) * Number(p.quantita),
-                        note: p.note || ""
-                    })),
-                    totaleOrdine: order.totale,
-                    note: order.note || ''
-                };
-                const receiptContentRiepilogo = generaScontrinoTermicoAvanzato(datiScontrinoRiepilogo, CONFIG_STAMPANTE);
-                const contentRiepilogo = generateEscPosContent(receiptContentRiepilogo);
-                bufferUnico = Buffer.concat([bufferUnico, logoBuffer, contentRiepilogo]);
+                if (getPrintSummarySetting()) {
+                    const datiScontrinoRiepilogo = {
+                        numeroScontrino: info.lastInsertRowid,
+                        dataOra: order.timestamp,
+                        titoloAzienda: NOME_AZIENDA,
+                        sottotitoloAzienda: 'Riepilogo Ordine',
+                        prodotti: prodotti.map(p => ({
+                            nome: p.nome,
+                            quantita: p.quantita,
+                            prezzo: p.prezzo,
+                            totale: Number(p.prezzo) * Number(p.quantita),
+                            note: p.note || ''
+                        })),
+                        totaleOrdine: order.totale,
+                        note: order.note || ''
+                    };
+                    const receiptContentRiepilogo = generaScontrinoTermicoAvanzato(datiScontrinoRiepilogo, CONFIG_STAMPANTE);
+                    const contentRiepilogo = generateEscPosContent(receiptContentRiepilogo);
+                    bufferUnico = Buffer.concat([bufferUnico, logoBuffer, Buffer.from([0x0A]), contentRiepilogo]);
+                }
                 // --- FINE BLOCCO STAMPA AVANZATA ---
                 printWithPrinter(printerName, bufferUnico)
                     .then(() => console.log('Stampa termica completata con layout avanzato (job per categoria).'))
@@ -1376,24 +1399,26 @@ io.on('connection', socket => {
             }
 
             // Stampa scontrino riepilogativo
-            const datiScontrinoRiepilogo = {
-                numeroScontrino: order.id,
-                dataOra: order.timestamp,
-                titoloAzienda: NOME_AZIENDA,
-                sottotitoloAzienda: 'Riepilogo Ordine (MODIFICATO)',
-                prodotti: prodotti.map(p => ({
-                    nome: p.nome,
-                    quantita: p.quantita,
-                    prezzo: p.prezzo,
-                    totale: Number(p.prezzo) * Number(p.quantita),
-                    note: p.note || ""
-                })),
-                totaleOrdine: order.totale,
-                note: order.note || ''
-            };
-            const receiptContentRiepilogo = generaScontrinoTermicoAvanzato(datiScontrinoRiepilogo, CONFIG_STAMPANTE);
-            const contentRiepilogo = generateEscPosContent(receiptContentRiepilogo);
-            bufferUnico = Buffer.concat([bufferUnico, logoBuffer, contentRiepilogo]);
+            if (getPrintSummarySetting()) {
+                const datiScontrinoRiepilogo = {
+                    numeroScontrino: order.id,
+                    dataOra: order.timestamp,
+                    titoloAzienda: NOME_AZIENDA,
+                    sottotitoloAzienda: 'Riepilogo Ordine (MODIFICATO)',
+                    prodotti: prodotti.map(p => ({
+                        nome: p.nome,
+                        quantita: p.quantita,
+                        prezzo: p.prezzo,
+                        totale: Number(p.prezzo) * Number(p.quantita),
+                        note: p.note || ''
+                    })),
+                    totaleOrdine: order.totale,
+                    note: order.note || ''
+                };
+                const receiptContentRiepilogo = generaScontrinoTermicoAvanzato(datiScontrinoRiepilogo, CONFIG_STAMPANTE);
+                const contentRiepilogo = generateEscPosContent(receiptContentRiepilogo);
+                bufferUnico = Buffer.concat([bufferUnico, logoBuffer, Buffer.from([0x0A]), contentRiepilogo]);
+            }
 
             // Esegui stampa
             await printWithPrinter(printerName, bufferUnico);
@@ -1693,24 +1718,26 @@ io.on('connection', socket => {
                 bufferUnico = Buffer.concat([bufferUnico, logoBuffer, contentCat]);
             }
 
-            const datiScontrinoRiepilogo = {
-                numeroScontrino: order.id,
-                dataOra: order.timestamp,
-                titoloAzienda: NOME_AZIENDA,
-                sottotitoloAzienda: 'Riepilogo Ordine',
-                prodotti: prodotti.map(p => ({
-                    nome: p.nome,
-                    quantita: p.quantita,
-                    prezzo: p.prezzo,
-                    totale: Number(p.prezzo) * Number(p.quantita),
-                    note: p.note || ""
-                })),
-                totaleOrdine: order.totale,
-                note: order.note || ''
-            };
-            const receiptContentRiepilogo = generaScontrinoTermicoAvanzato(datiScontrinoRiepilogo, CONFIG_STAMPANTE);
-            const contentRiepilogo = generateEscPosContent(receiptContentRiepilogo);
-            bufferUnico = Buffer.concat([bufferUnico, logoBuffer, contentRiepilogo]);
+            if (getPrintSummarySetting()) {
+                const datiScontrinoRiepilogo = {
+                    numeroScontrino: order.id,
+                    dataOra: order.timestamp,
+                    titoloAzienda: NOME_AZIENDA,
+                    sottotitoloAzienda: 'Riepilogo Ordine',
+                    prodotti: prodotti.map(p => ({
+                        nome: p.nome,
+                        quantita: p.quantita,
+                        prezzo: p.prezzo,
+                        totale: Number(p.prezzo) * Number(p.quantita),
+                        note: p.note || ''
+                    })),
+                    totaleOrdine: order.totale,
+                    note: order.note || ''
+                };
+                const receiptContentRiepilogo = generaScontrinoTermicoAvanzato(datiScontrinoRiepilogo, CONFIG_STAMPANTE);
+                const contentRiepilogo = generateEscPosContent(receiptContentRiepilogo);
+                bufferUnico = Buffer.concat([bufferUnico, logoBuffer, Buffer.from([0x0A]), contentRiepilogo]);
+            }
 
             await printWithPrinter(printerName, bufferUnico);
             console.log(`Ristampa termica dell'ordine #${orderId} completata.`);
@@ -1810,6 +1837,25 @@ app.get("/get-db-from-folder", (req, res) => {
         res.status(500).json({ error: "Impossibile leggere la cartella dei database" });
     }
 });
+// ================== API CONFIG SCONTRINO ==================
+app.get('/api/print-summary-receipt', (req, res) => {
+    try {
+        res.json({ value: getPrintSummarySetting() });
+    } catch {
+        res.status(500).json({ error: 'Impossibile leggere la preferenza' });
+    }
+});
+
+app.post('/api/print-summary-receipt', (req, res) => {
+    try {
+        const value = !!(req.body && req.body.value);
+        const updated = writeAppConfig({ printSummaryReceipt: value });
+        res.json({ value: !!updated.printSummaryReceipt });
+    } catch {
+        res.status(500).json({ error: 'Impossibile salvare la preferenza' });
+    }
+});
+// ================== FINE API CONFIG SCONTRINO ==================
 
 // Serve i file statici del frontend Vue
 const staticPath = path.join(__dirname, '../client/dist');
@@ -1820,3 +1866,4 @@ app.use(express.static(staticPath));
 app.get('*', (req, res) => {
   res.sendFile(path.join(staticPath, 'index.html'));
 });*/
+
