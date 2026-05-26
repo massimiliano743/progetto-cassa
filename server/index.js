@@ -14,12 +14,6 @@ console.log('Caricamento better-sqlite3...', Date.now());
 const Database = require('better-sqlite3')
 console.log('Caricamento path...', Date.now());
 const fsp = require('fs/promises');
-console.log('Caricamento handlebars...', Date.now());
-const handlebars = require('handlebars');
-console.log('Caricamento pdfkit...', Date.now());
-const PDFDocument = require('pdfkit');
-console.log('Caricamento puppeteer...', Date.now());
-const puppeteer = require('puppeteer');
 console.log('Caricamento child_process...', Date.now());
 const { exec, execSync } = require('child_process');
 console.log('Caricamento os...', Date.now());
@@ -63,61 +57,69 @@ function getPrintSummarySetting() {
 }
 
 // ================== SISTEMA DI STAMPA TERMICA UNIVERSALE ==================
+const net = require('net');
 const PRINTER_CONFIG_PATH = path.join(__dirname, 'stampante-selezionata.json');
 const isWindows = os.platform() === 'win32';
 
-// Costanti ESC/POS per i comandi - INIZIO AGGIUNTA/VERIFICA
-const ESC = '\x1B'; // Escape character (ASCII 27 in esadecimale)
-const GS = '\x1D';  // Group Separator character (ASCII 29 in esadecimale)
-const FS = '\x1C';  // Field Separator character (ASCII 28 in esadecimale)
-// FINE AGGIUNTA/VERIFICA
+const ESC = '\x1B';
+const GS  = '\x1D';
+
 const ESC_POS_COMMANDS = {
-    TAGLIA_CARTA:      `${GS}V\x00`,     // Taglio completo della carta. \x00 indica taglio completo.
-    TESTO_GRANDE:      `${ESC}!\x30`,    // Doppia altezza e larghezza (Font A).
-    TESTO_NORMALE:     `${ESC}!\x00`,    // Testo normale (Font A).
-    TESTO_MEDIO:       `${ESC}!\x10`,    // Altezza doppia, larghezza normale (Font A).
-    TESTO_LARGO:       `${ESC}!\x20`,    // Larghezza doppia, altezza normale (Font A).
-    FONT_B:            `${ESC}M\x01`,    // Font B (più piccolo).
-    FONT_A:            `${ESC}M\x00`,    // Font A (standard).
-    SOTTOLINEATO:      `${ESC}-\x01`,    // Sottolineato ON.
-    SOTTOLINEATO_OFF:  `${ESC}-\x00`,    // Sottolineato OFF.
-    INVERTI:           `${ESC}B\x01`,    // Inverti bianco/nero ON.
-    INVERTI_OFF:       `${ESC}B\x00`,    // Inverti bianco/nero OFF.
-    CENTRA:            `${ESC}a\x01`,    // Allineamento al centro.
-    ALLINEA_SINISTRA:  `${ESC}a\x00`,    // Allineamento a sinistra.
-    ALLINEA_DESTRA:    `${ESC}a\x02`,    // Allineamento a destra.
-    GRASSETTO:         `${ESC}E\x01`,    // Grassetto ON.
-    GRASSETTO_OFF:     `${ESC}E\x00`,    // Grassetto OFF.
-    // Puoi aggiungere altri comandi qui se necessario in futuro
+    TAGLIA_CARTA:     `${GS}V\x00`,
+    TESTO_GRANDE:     `${ESC}!\x30`,
+    TESTO_NORMALE:    `${ESC}!\x00`,
+    TESTO_MEDIO:      `${ESC}!\x10`,
+    TESTO_LARGO:      `${ESC}!\x20`,
+    FONT_B:           `${ESC}M\x01`,
+    FONT_A:           `${ESC}M\x00`,
+    SOTTOLINEATO:     `${ESC}-\x01`,
+    SOTTOLINEATO_OFF: `${ESC}-\x00`,
+    INVERTI:          `${ESC}B\x01`,
+    INVERTI_OFF:      `${ESC}B\x00`,
+    CENTRA:           `${ESC}a\x01`,
+    ALLINEA_SINISTRA: `${ESC}a\x00`,
+    ALLINEA_DESTRA:   `${ESC}a\x02`,
+    GRASSETTO:        `${ESC}E\x01`,
+    GRASSETTO_OFF:    `${ESC}E\x00`,
 };
 
-// Inizializzazione config stampante
+// --- Config stampante ---
+
+function readPrinterConfig() {
+    try {
+        return JSON.parse(fs.readFileSync(PRINTER_CONFIG_PATH, 'utf-8'));
+    } catch {
+        return { tipo: 'sistema', printer: null, tcpHost: null, tcpPort: 9100 };
+    }
+}
+
+function writePrinterConfig(partial) {
+    const current = readPrinterConfig();
+    const updated = { ...current, ...partial, lastUpdated: new Date().toISOString() };
+    fs.writeFileSync(PRINTER_CONFIG_PATH, JSON.stringify(updated, null, 2), 'utf-8');
+    return updated;
+}
+
 function initPrinterConfig() {
     if (!fs.existsSync(PRINTER_CONFIG_PATH)) {
-        fs.writeFileSync(PRINTER_CONFIG_PATH, JSON.stringify({ printer: null }), 'utf-8');
+        fs.writeFileSync(PRINTER_CONFIG_PATH, JSON.stringify(
+            { tipo: 'sistema', printer: null, tcpHost: null, tcpPort: 9100 }, null, 2
+        ), 'utf-8');
     }
 }
 initPrinterConfig();
 
-// Ottieni stampante selezionata
+// Compatibilità con codice esistente
 function getSelectedPrinter() {
-    try {
-        const data = fs.readFileSync(PRINTER_CONFIG_PATH, 'utf-8');
-        return JSON.parse(data).printer;
-    } catch {
-        return null;
-    }
+    const cfg = readPrinterConfig();
+    if (cfg.tipo === 'tcp') return cfg.tcpHost ? `tcp://${cfg.tcpHost}:${cfg.tcpPort || 9100}` : null;
+    return cfg.printer || null;
 }
 
-// Salva stampante selezionata
 function setSelectedPrinter(printerName) {
-    fs.writeFileSync(PRINTER_CONFIG_PATH, JSON.stringify({
-        printer: printerName,
-        lastUpdated: new Date().toISOString()
-    }), 'utf-8');
+    writePrinterConfig({ tipo: 'sistema', printer: printerName, tcpHost: null });
 }
 
-// Ottieni la stampante predefinita
 function getDefaultPrinter() {
     try {
         if (isWindows) {
@@ -135,20 +137,14 @@ function getDefaultPrinter() {
     }
 }
 
-// Funzione per ottenere la lista delle stampanti
 async function getPrinterList() {
     try {
         if (isWindows) {
             const stdout = execSync('wmic printer get name').toString();
-            return stdout.split('\r\r\n')
-                .slice(1)
-                .map(p => p.trim())
-                .filter(p => p);
+            return stdout.split('\r\r\n').slice(1).map(p => p.trim()).filter(Boolean);
         } else {
             const stdout = execSync('lpstat -e').toString();
-            return stdout.split('\n')
-                .map(line => line.trim())
-                .filter(line => line);
+            return stdout.split('\n').map(line => line.trim()).filter(Boolean);
         }
     } catch (error) {
         console.error('Errore lista stampanti:', error);
@@ -156,107 +152,167 @@ async function getPrinterList() {
     }
 }
 
-// Funzione per stampare con una specifica stampante
-async function printWithPrinter(printerName, content) {
-    const printData = Buffer.isBuffer(content) ? content : Buffer.from(content);
+// --- Stampa TCP diretta (porta 9100) ---
 
+function printViaTcp(host, port, data) {
+    return new Promise((resolve, reject) => {
+        const printData = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        const client = new net.Socket();
+        let settled = false;
+
+        const done = (err) => {
+            if (settled) return;
+            settled = true;
+            client.destroy();
+            if (err) reject(err); else resolve();
+        };
+
+        client.setTimeout(5000);
+        client.on('timeout', () => done(new Error(`Timeout connessione TCP a ${host}:${port}`)));
+        client.on('error', done);
+        client.connect(port, host, () => {
+            client.write(printData, (err) => done(err || null));
+        });
+    });
+}
+
+// --- Stampa via sistema operativo (lpr / PowerShell) ---
+
+function printViaSystem(printerName, printData) {
     if (isWindows) {
-        // Usa PowerShell per stampare su Windows
         const base64 = printData.toString('base64');
+        const safePrinterName = printerName.replace(/'/g, "''");
         const psScript = `
-            $printerName = "${printerName}"
-            $bytes = [Convert]::FromBase64String("${base64}")
-            $filePath = [System.IO.Path]::GetTempFileName()
-            [System.IO.File]::WriteAllBytes($filePath, $bytes)
-            Start-Process -FilePath $filePath -Verb PrintTo -ArgumentList $printerName -Wait
-            Start-Sleep -Seconds 2
-            Remove-Item $filePath
-        `;
+$printerName = '${safePrinterName}'
+$bytes = [Convert]::FromBase64String('${base64}')
 
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class RawPrint {
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
+    public class DOCINFOA {
+        [MarshalAs(UnmanagedType.LPStr)] public string pDocName;
+        [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;
+        [MarshalAs(UnmanagedType.LPStr)] public string pDataType;
+    }
+    [DllImport("winspool.drv", CharSet=CharSet.Auto, SetLastError=true)]
+    public static extern bool OpenPrinter(string n, out IntPtr h, IntPtr d);
+    [DllImport("winspool.drv", SetLastError=true)]
+    public static extern bool ClosePrinter(IntPtr h);
+    [DllImport("winspool.drv", CharSet=CharSet.Auto, SetLastError=true)]
+    public static extern int StartDocPrinter(IntPtr h, int l, [In, MarshalAs(UnmanagedType.LPStruct)] DOCINFOA di);
+    [DllImport("winspool.drv", SetLastError=true)]
+    public static extern bool EndDocPrinter(IntPtr h);
+    [DllImport("winspool.drv", SetLastError=true)]
+    public static extern bool StartPagePrinter(IntPtr h);
+    [DllImport("winspool.drv", SetLastError=true)]
+    public static extern bool EndPagePrinter(IntPtr h);
+    [DllImport("winspool.drv", SetLastError=true)]
+    public static extern bool WritePrinter(IntPtr h, IntPtr p, int c, out int w);
+}
+"@
+
+$hPrinter = [IntPtr]::Zero
+[RawPrint]::OpenPrinter($printerName, [ref]$hPrinter, [IntPtr]::Zero) | Out-Null
+$di = New-Object RawPrint+DOCINFOA
+$di.pDocName = 'Scontrino'
+$di.pOutputFile = $null
+$di.pDataType = 'RAW'
+[RawPrint]::StartDocPrinter($hPrinter, 1, $di) | Out-Null
+[RawPrint]::StartPagePrinter($hPrinter) | Out-Null
+$ptr = [Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+[Runtime.InteropServices.Marshal]::Copy($bytes, 0, $ptr, $bytes.Length)
+$written = 0
+[RawPrint]::WritePrinter($hPrinter, $ptr, $bytes.Length, [ref]$written) | Out-Null
+[Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
+[RawPrint]::EndPagePrinter($hPrinter) | Out-Null
+[RawPrint]::EndDocPrinter($hPrinter) | Out-Null
+[RawPrint]::ClosePrinter($hPrinter) | Out-Null
+`;
         return new Promise((resolve, reject) => {
-            exec(`powershell -Command "${psScript}"`, (error) => {
-                if (error) reject(error);
-                else resolve();
+            const scriptPath = path.join(os.tmpdir(), `print_${Date.now()}.ps1`);
+            try { fs.writeFileSync(scriptPath, psScript, 'utf-8'); } catch (err) { return reject(err); }
+            exec(`powershell -NonInteractive -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`, (error, stdout, stderr) => {
+                try { fs.unlinkSync(scriptPath); } catch {}
+                if (error) { console.error('[STAMPA Windows] Errore:', stderr); reject(error); }
+                else { console.log('[STAMPA Windows] Completata'); resolve(); }
             });
         });
     } else {
-        // Usa lpr per macOS/Linux
         return new Promise((resolve, reject) => {
-            const os = require('os');
-            const tempDir = os.tmpdir();
-            const tempFile = path.join(tempDir, `print_${Date.now()}.bin`);
-            try {
-                fs.writeFileSync(tempFile, printData);
-                console.log(`[STAMPA] File temporaneo creato: ${tempFile}`);
-            } catch (err) {
-                console.error(`[STAMPA] Errore creazione file temporaneo:`, err);
-                return reject(err);
-            }
-            exec(`lpr -o raw ${tempFile} -P "${printerName}"`, (error, stdout, stderr) => {
-                try {
-                    fs.unlinkSync(tempFile);
-                    console.log(`[STAMPA] File temporaneo eliminato: ${tempFile}`);
-                } catch (unlinkErr) {
-                    console.error(`[STAMPA] Errore eliminazione file temporaneo:`, unlinkErr);
-                }
-                if (error) {
-                    console.error(`[STAMPA] Errore comando lpr:`, error, stderr);
-                    return reject(error);
-                }
-                console.log(`[STAMPA] Comando lpr eseguito con successo. Output:`, stdout);
-                resolve();
+            const tempFile = path.join(os.tmpdir(), `print_${Date.now()}.bin`);
+            try { fs.writeFileSync(tempFile, printData); } catch (err) { return reject(err); }
+            exec(`lpr -P "${printerName}" -o raw "${tempFile}"`, (error, stdout, stderr) => {
+                try { fs.unlinkSync(tempFile); } catch {}
+                if (error) { console.error('[STAMPA lpr] Errore:', stderr); reject(error); }
+                else { console.log('[STAMPA lpr] Completata'); resolve(); }
             });
         });
     }
 }
 
-// Funzione per generare comandi ESC/POS
-function generateEscPosContent(receiptContent) { // ho rinominato 'test' in 'receiptContent' per chiarezza
+// --- Entry point unificato ---
+
+async function printWithPrinter(printerName, content) {
+    const printData = Buffer.isBuffer(content) ? content : Buffer.from(content);
+    const cfg = readPrinterConfig();
+
+    if (cfg.tipo === 'tcp') {
+        const host = cfg.tcpHost;
+        const port = cfg.tcpPort || 9100;
+        if (!host) throw new Error('Indirizzo IP stampante TCP non configurato');
+        console.log(`[STAMPA TCP] ${host}:${port}`);
+        return printViaTcp(host, port, printData);
+    }
+
+    console.log(`[STAMPA Sistema] ${printerName}`);
+    return printViaSystem(printerName, printData);
+}
+
+// Mapping Unicode → CP858 per caratteri italiani e latini comuni
+const CP858_MAP = {
+    0xC7: 0x80, 0xFC: 0x81, 0xE9: 0x82, 0xE2: 0x83, 0xE4: 0x84,
+    0xE0: 0x85, 0xE5: 0x86, 0xE7: 0x87, 0xEA: 0x88, 0xEB: 0x89,
+    0xE8: 0x8A, 0xEF: 0x8B, 0xEE: 0x8C, 0xEC: 0x8D, 0xC4: 0x8E,
+    0xC5: 0x8F, 0xC9: 0x90, 0xE6: 0x91, 0xC6: 0x92, 0xF4: 0x93,
+    0xF6: 0x94, 0xF2: 0x95, 0xFB: 0x96, 0xF9: 0x97, 0xFF: 0x98,
+    0xD6: 0x99, 0xDC: 0x9A, 0xF8: 0x9B, 0xA3: 0x9C, 0xD8: 0x9D,
+    0xE1: 0xA0, 0xED: 0xA1, 0xF3: 0xA2, 0xFA: 0xA3, 0xF1: 0xA4,
+    0xC1: 0xB5, 0xC2: 0xB6, 0xC0: 0xB7, 0xC8: 0xD4, 0xCC: 0xDE,
+    0xD2: 0xE3, 0xD9: 0xEB, 0x20AC: 0xD5, // €
+};
+
+function unicodeToCP858(charCode) {
+    if (charCode < 128) return charCode;
+    return CP858_MAP[charCode] !== undefined ? CP858_MAP[charCode] : 0x3F; // '?' per caratteri non mappati
+}
+
+function generateEscPosContent(receiptContent) {
     let escPosBytes = [];
 
-    // 1. Inizializza la stampante (resettando le impostazioni) - Buona pratica per iniziare puliti.
-    escPosBytes.push(ESC.charCodeAt(0)); // ESC
-    escPosBytes.push('@'.charCodeAt(0)); // @
-
-    // 2. Imposta la Code Page per il simbolo Euro
-    console.log("Configurazione per simbolo Euro.");
-    // Comando per abilitare il simbolo Euro: 1f 1b 10 12 12 01 (HEX)
-    // Questo è il comando specifico Munbyn ITPP068USE per attivare il simbolo dell'euro.
-    escPosBytes.push(0x1F, 0x1B, 0x10, 0x12, 0x12, 0x01);
-    // Comando per selezionare la Code Page 2 (CP858) - Munbyn spesso la associa all'euro.
-    // Prova con 0x02. Se non funziona, prova con 0x00 (CP437, spesso \xDD) o 0x10 (CP1252, spesso \x80).
-    escPosBytes.push(ESC.charCodeAt(0)); // ESC
-    escPosBytes.push('t'.charCodeAt(0)); // t
-    escPosBytes.push(0x10); // Code Page 2 (HEX: \x02, corrisponde a CP858)
+    // Inizializza stampante (ESC @) e seleziona Code Page CP858 (ESC t 0x10)
+    escPosBytes.push(ESC.charCodeAt(0), '@'.charCodeAt(0));
+    escPosBytes.push(0x1F, 0x1B, 0x10, 0x12, 0x12, 0x01); // attiva euro su Munbyn
+    escPosBytes.push(ESC.charCodeAt(0), 't'.charCodeAt(0), 0x10); // CP858
 
     const lines = receiptContent.split('\n');
 
     lines.forEach(line => {
         let processedLine = line;
 
-        // Sostituisci i comandi testuali come [COMANDO:CENTRA] con le sequenze ESC/POS corrette
         for (const [commandName, escPosSequence] of Object.entries(ESC_POS_COMMANDS)) {
             const commandPlaceholder = `[COMANDO:${commandName}]`;
             processedLine = processedLine.split(commandPlaceholder).join(escPosSequence);
         }
 
-        // Gestione del simbolo Euro (€): Sostituisci il simbolo testuale con il byte corretto
-        // '\xD5' è il byte per l'Euro in Code Page 858.
-        // Se non funziona con 0x02 e \xD5, prova a cambiare 0x02 a 0x00 e \xD5 a \xDD,
-        // o 0x02 a 0x10 e \xD5 a \x80 (ma \xD5 con 0x02 è il più probabile per Munbyn).
-        processedLine = processedLine.replace(/€/g, '\x80');
-
-        // Converti la riga processata in un array di byte ASCII (o della Code Page selezionata)
-        // Questo ciclo itera su ogni carattere della stringa e lo aggiunge come singolo byte.
         for (let i = 0; i < processedLine.length; i++) {
-            escPosBytes.push(processedLine.charCodeAt(i));
+            escPosBytes.push(unicodeToCP858(processedLine.charCodeAt(i)));
         }
 
-        // Aggiungi un Line Feed (ritorno a capo) alla fine di ogni riga
-        escPosBytes.push('\x0A'.charCodeAt(0)); // Line Feed (LF)
+        escPosBytes.push(0x0A); // Line Feed
     });
 
-    // Ritorna un Buffer di byte. Questo è CRUCIALE per inviare dati raw alla stampante.
     return Buffer.from(escPosBytes);
 }
 
@@ -307,6 +363,7 @@ async function getLogoEscPosBuffer(logoPath) {
 }
 
 // API per la gestione della stampante
+// Elenco stampanti di sistema (usato solo in modalità "sistema")
 app.get('/stampanti', async (req, res) => {
     try {
         const printers = await getPrinterList();
@@ -316,33 +373,45 @@ app.get('/stampanti', async (req, res) => {
     }
 });
 
-app.post('/seleziona-stampante', (req, res) => {
-    const { printerName } = req.body;
-    if (!printerName) {
-        return res.status(400).json({ error: 'Nome stampante mancante' });
-    }
-    setSelectedPrinter(printerName);
-    res.json({ success: true });
+// Config completa stampante (include tipo, tcpHost, tcpPort)
+app.get('/stampante-config', (req, res) => {
+    res.json(readPrinterConfig());
 });
 
+// Selezione stampante — supporta sia sistema che TCP
+app.post('/seleziona-stampante', (req, res) => {
+    const { tipo, printerName, tcpHost, tcpPort } = req.body;
+    if (tipo === 'tcp') {
+        if (!tcpHost) return res.status(400).json({ error: 'tcpHost mancante' });
+        writePrinterConfig({ tipo: 'tcp', tcpHost, tcpPort: tcpPort || 9100, printer: null });
+    } else {
+        if (!printerName) return res.status(400).json({ error: 'Nome stampante mancante' });
+        writePrinterConfig({ tipo: 'sistema', printer: printerName, tcpHost: null });
+    }
+    res.json({ success: true, config: readPrinterConfig() });
+});
+
+// Test connessione TCP (senza stampare nulla di visibile)
+app.post('/test-tcp', async (req, res) => {
+    const { tcpHost, tcpPort } = req.body;
+    if (!tcpHost) return res.status(400).json({ error: 'tcpHost mancante' });
+    const port = tcpPort || 9100;
+    try {
+        // ESC @ = reset stampante: comando innocuo per testare la connessione
+        await printViaTcp(tcpHost, port, Buffer.from([0x1B, 0x40]));
+        res.json({ success: true, message: `Connessione TCP a ${tcpHost}:${port} riuscita` });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Stampa testo ESC/POS generico via HTTP
 app.post('/stampa', async (req, res) => {
     try {
         const { testo } = req.body;
-        if (!testo) {
-            return res.status(400).json({ error: 'Testo mancante' });
-        }
-
-        // Usa stampante selezionata o predefinita
-        let printerName = getSelectedPrinter();
-        if (!printerName) {
-            printerName = getDefaultPrinter();
-            if (printerName) setSelectedPrinter(printerName);
-        }
-
-        if (!printerName) {
-            return res.status(400).json({ error: 'Nessuna stampante disponibile' });
-        }
-
+        if (!testo) return res.status(400).json({ error: 'Testo mancante' });
+        const printerName = risolviStampante();
+        if (!printerName) return res.status(400).json({ error: 'Nessuna stampante disponibile' });
         const content = generateEscPosContent(testo);
         await printWithPrinter(printerName, content);
         res.json({ success: true });
@@ -354,12 +423,13 @@ app.post('/stampa', async (req, res) => {
 
 app.get('/stampante-stato', async (req, res) => {
     try {
-        const printers = await getPrinterList();
-        const printersAvailable = printers.length > 0;
-        res.json({
-            selected: !!getSelectedPrinter(),
-            printersAvailable
-        });
+        const cfg = readPrinterConfig();
+        if (cfg.tipo === 'tcp') {
+            res.json({ tipo: 'tcp', selected: !!cfg.tcpHost, tcpHost: cfg.tcpHost, tcpPort: cfg.tcpPort || 9100 });
+        } else {
+            const printers = await getPrinterList();
+            res.json({ tipo: 'sistema', selected: !!cfg.printer, printersAvailable: printers.length > 0 });
+        }
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -367,10 +437,8 @@ app.get('/stampante-stato', async (req, res) => {
 
 app.get('/stampante-selezionata', (req, res) => {
     const selected = getSelectedPrinter();
-    if (!selected) {
-        return res.status(404).json({ error: 'Nessuna stampante selezionata' });
-    }
-    res.json({ printer: selected });
+    if (!selected) return res.status(404).json({ error: 'Nessuna stampante selezionata' });
+    res.json({ printer: selected, config: readPrinterConfig() });
 });
 
 app.get('/set-db', (req, res) => {
@@ -481,10 +549,6 @@ function openDb(dbName) {
     }
 }
 
-db = openDb(currentDbName);
-
-
-
 let orders = []
 let products = []
 let masterId = null;
@@ -494,6 +558,266 @@ const users = [
     { username: 'user', password: 'user' }
 ];
 
+
+const helpers = {
+    creaRigaColonne: function(colSinistra, colCentro, colDestra, larghezze) {
+        const [larghSinistra, larghCentro, larghDestra] = larghezze;
+        let righe = [];
+        let testoSinistraRimanente = colSinistra;
+        let primoGiro = true;
+
+        while (testoSinistraRimanente.length > 0) {
+            let parteSinistra = testoSinistraRimanente.substring(0, larghSinistra);
+            testoSinistraRimanente = testoSinistraRimanente.substring(larghSinistra);
+            parteSinistra = parteSinistra.padEnd(larghSinistra, ' ');
+
+            if (primoGiro) {
+                const parteCentro = colCentro.padStart(larghCentro, ' ');
+                const parteDestra = colDestra.padStart(larghDestra, ' ');
+                righe.push(parteSinistra + parteCentro + parteDestra);
+                primoGiro = false;
+            } else {
+                righe.push(parteSinistra);
+            }
+        }
+        return righe;
+    },
+    creaSeparatore: function(larghezzaTotale) {
+        return ''.padEnd(larghezzaTotale, '-');
+    }
+};
+
+function generaScontrinoTermicoAvanzato(datiOrdine, config = { larghezzaCaratteri: 42 }) {
+    const { larghezzaCaratteri } = config;
+    let scontrino = [];
+
+    const dataOraOrdine = new Date(datiOrdine.dataOra);
+    const addLeadingZero = (num) => num < 10 ? '0' + num : num;
+    const giorno = addLeadingZero(dataOraOrdine.getDate());
+    const mese = addLeadingZero(dataOraOrdine.getMonth() + 1);
+    const anno = dataOraOrdine.getFullYear();
+    const ore = addLeadingZero(dataOraOrdine.getHours());
+    const minuti = addLeadingZero(dataOraOrdine.getMinutes());
+
+    const dataFormattata = `${giorno}/${mese}/${anno} ${ore}:${minuti}`;
+
+    scontrino.push('');
+    scontrino.push(`[COMANDO:CENTRA][COMANDO:TESTO_GRANDE]${datiOrdine.titoloAzienda}[COMANDO:TESTO_NORMALE]`);
+    scontrino.push('[COMANDO:TESTO_NORMALE]');
+    scontrino.push(`[COMANDO:CENTRA][COMANDO:TESTO_GRANDE][COMANDO:FONT_A][COMANDO:SOTTOLINEATO]${datiOrdine.sottotitoloAzienda}[COMANDO:SOTTOLINEATO_OFF][COMANDO:TESTO_NORMALE]`);
+    scontrino.push('');
+    scontrino.push('[COMANDO:ALLINEA_SINISTRA][COMANDO:TESTO_NORMALE]');
+    scontrino.push(`Data: ${dataFormattata}`);
+    scontrino.push(`Numero scontrino: [COMANDO:TESTO_GRANDE]${datiOrdine.numeroScontrino}[COMANDO:TESTO_NORMALE]`);
+    scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
+    const larghezzeColonne = [
+        Math.floor(larghezzaCaratteri * 0.5),
+        Math.floor(larghezzaCaratteri * 0.2),
+        Math.floor(larghezzaCaratteri * 0.3)
+    ];
+
+    const sommaLarghezze = larghezzeColonne[0] + larghezzeColonne[1] + larghezzeColonne[2];
+    if (sommaLarghezze < larghezzaCaratteri) {
+        larghezzeColonne[0] += (larghezzaCaratteri - sommaLarghezze);
+    }
+
+    scontrino.push(...helpers.creaRigaColonne('Prodotto', 'N\xb0', 'TOT', larghezzeColonne));
+    scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
+    datiOrdine.prodotti.forEach(p => {
+        let nomeProdotto = `${p.nome}`;
+        let extra = '';
+        if (p.note && p.note.trim() !== "") {
+            extra += ` - ${p.note}`;
+        }
+        if (p.quantita > 1) {
+            const prezzoUnitarioFormat = Number(p.prezzoUnitario || p.prezzo).toFixed(2);
+            extra += ` (${prezzoUnitarioFormat} cad.)`;
+        }
+        nomeProdotto = nomeProdotto.toUpperCase() + extra;
+        const qta = p.quantita.toString();
+        const totaleRiga = Number(p.totale).toFixed(2);
+        const righeProd = helpers.creaRigaColonne(nomeProdotto, qta, totaleRiga, larghezzeColonne);
+        if (righeProd.length > 0) {
+            righeProd[0] = `[COMANDO:TESTO_MEDIO]` + righeProd[0];
+        }
+        scontrino.push(...righeProd);
+    });
+    scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
+    const testoTotale = `Totale: ` + Number(datiOrdine.totaleOrdine).toFixed(2);
+    scontrino.push(`[COMANDO:ALLINEA_DESTRA][COMANDO:TESTO_GRANDE]${testoTotale}[COMANDO:TESTO_NORMALE]`);
+    scontrino.push('');
+    if (datiOrdine.note && datiOrdine.note.trim() !== "") {
+        scontrino.push('');
+        scontrino.push(`[COMANDO:CENTRA]Nota:[COMANDO:TESTO_NORMALE] [COMANDO:GRASSETTO] ${datiOrdine.note}[COMANDO:GRASSETTO_OFF] [COMANDO:TESTO_NORMALE]`);
+        scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
+        scontrino.push('');
+        scontrino.push('');
+        scontrino.push('');
+    }
+    scontrino.push('[COMANDO:CENTRA]Grazie per il tuo acquisto!');
+    scontrino.push('');
+    scontrino.push('');
+    scontrino.push('');
+    scontrino.push('');
+    scontrino.push('');
+    scontrino.push('');
+    scontrino.push('[COMANDO:TAGLIA_CARTA]');
+    return scontrino.join('\n');
+}
+
+// ================== HELPER DI STAMPA ==================
+
+async function getLogoBuffer() {
+    const imgDir = path.join(__dirname, 'img');
+    try {
+        const files = fs.readdirSync(imgDir)
+            .filter(f => f.startsWith('uploaded_') && (f.endsWith('.png') || f.endsWith('.jpg')))
+            .sort((a, b) => {
+                const getTs = name => {
+                    const match = name.match(/uploaded_(\d+)/);
+                    return match ? parseInt(match[1]) : 0;
+                };
+                return getTs(b) - getTs(a);
+            });
+        const logoPath = files.length > 0
+            ? path.join(imgDir, files[0])
+            : fs.existsSync(path.join(imgDir, 'logo.png')) ? path.join(imgDir, 'logo.png') : null;
+        if (!logoPath) return Buffer.alloc(0);
+        return await getLogoEscPosBuffer(logoPath);
+    } catch (e) {
+        console.error('Errore caricamento logo:', e);
+        return Buffer.alloc(0);
+    }
+}
+
+function risolviStampante() {
+    const cfg = readPrinterConfig();
+    if (cfg.tipo === 'tcp') return cfg.tcpHost ? `tcp://${cfg.tcpHost}:${cfg.tcpPort || 9100}` : null;
+    let printerName = cfg.printer;
+    if (!printerName) {
+        printerName = getDefaultPrinter();
+        if (printerName) writePrinterConfig({ tipo: 'sistema', printer: printerName, tcpHost: null });
+    }
+    return printerName;
+}
+
+function parseRecapProdotti(recapOrdine) {
+    try {
+        const arr = JSON.parse(recapOrdine);
+        if (Array.isArray(arr)) return arr;
+    } catch { /* legacy format */ }
+    const prodottiMap = {};
+    recapOrdine.split(',').map(p => p.trim()).filter(Boolean).forEach(entry => {
+        const [productIdStr, prezzoStr] = entry.split(':');
+        const productId = parseInt(productIdStr);
+        const prezzo = parseFloat(prezzoStr);
+        if (!isNaN(productId)) {
+            if (!prodottiMap[productId]) {
+                const prodottoDB = db.prepare('SELECT nome FROM prodotti WHERE id = ?').get(productId);
+                prodottiMap[productId] = {
+                    id: productId,
+                    nome: prodottoDB ? prodottoDB.nome : `Prodotto #${productId}`,
+                    prezzo,
+                    quantita: 1,
+                    note: ""
+                };
+            } else {
+                prodottiMap[productId].quantita += 1;
+            }
+        }
+    });
+    return Object.values(prodottiMap);
+}
+
+function raggruppaPerCategoria(prodotti) {
+    const prodottiPerCategoria = {};
+    prodotti.forEach(p => {
+        const prodDb = db.prepare('SELECT tipologia FROM prodotti WHERE id = ?').get(p.id);
+        const tipologia = prodDb ? String(prodDb.tipologia) : 'senza_categoria';
+        if (!prodottiPerCategoria[tipologia]) prodottiPerCategoria[tipologia] = [];
+        prodottiPerCategoria[tipologia].push({
+            nome: p.nome,
+            quantita: p.quantita,
+            prezzo: p.prezzo,
+            totale: Number(p.prezzo) * Number(p.quantita),
+            note: p.note || ""
+        });
+    });
+    const categorieNomi = {};
+    Object.keys(prodottiPerCategoria).forEach(catId => {
+        const cat = db.prepare('SELECT name FROM categories WHERE id = ?').get(catId);
+        categorieNomi[catId] = cat ? cat.name : `Categoria #${catId}`;
+    });
+    return { prodottiPerCategoria, categorieNomi };
+}
+
+async function costruisciBufferStampa({ orderId, timestamp, prodotti, totaleOrdine, note, suffissoTitolo }) {
+    const CONFIG_STAMPANTE = { larghezzaCaratteri: 42 };
+    const { prodottiPerCategoria, categorieNomi } = raggruppaPerCategoria(prodotti);
+    const logoBuffer = await getLogoBuffer();
+    let bufferUnico = Buffer.alloc(0);
+
+    for (const [catId, prodottiCat] of Object.entries(prodottiPerCategoria)) {
+        const sottotitolo = suffissoTitolo ? `${categorieNomi[catId]} ${suffissoTitolo}` : categorieNomi[catId];
+        const dati = {
+            numeroScontrino: orderId,
+            dataOra: timestamp,
+            titoloAzienda: currentDbName,
+            sottotitoloAzienda: sottotitolo,
+            prodotti: prodottiCat,
+            totaleOrdine: prodottiCat.reduce((acc, p) => acc + Number(p.totale), 0),
+            note: ''
+        };
+        const content = generateEscPosContent(generaScontrinoTermicoAvanzato(dati, CONFIG_STAMPANTE));
+        bufferUnico = Buffer.concat([bufferUnico, logoBuffer, content]);
+    }
+
+    if (getPrintSummarySetting()) {
+        const sottotitoloRiepilogo = suffissoTitolo ? `Riepilogo Ordine ${suffissoTitolo}` : 'Riepilogo Ordine';
+        const datiRiepilogo = {
+            numeroScontrino: orderId,
+            dataOra: timestamp,
+            titoloAzienda: currentDbName,
+            sottotitoloAzienda: sottotitoloRiepilogo,
+            prodotti: prodotti.map(p => ({
+                nome: p.nome,
+                quantita: p.quantita,
+                prezzo: p.prezzo,
+                totale: Number(p.prezzo) * Number(p.quantita),
+                note: p.note || ''
+            })),
+            totaleOrdine,
+            note: note || ''
+        };
+        const contentRiepilogo = generateEscPosContent(generaScontrinoTermicoAvanzato(datiRiepilogo, CONFIG_STAMPANTE));
+        bufferUnico = Buffer.concat([bufferUnico, logoBuffer, Buffer.from([0x0A]), contentRiepilogo]);
+    }
+
+    return bufferUnico;
+}
+
+async function stampaOrdineById(orderId) {
+    const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+    if (!order) throw new Error(`Ordine con ID ${orderId} non trovato.`);
+
+    const printerName = risolviStampante();
+    if (!printerName) throw new Error('Nessuna stampante disponibile o configurata.');
+
+    const prodotti = parseRecapProdotti(order.recapOrdine);
+    const bufferUnico = await costruisciBufferStampa({
+        orderId: order.id,
+        timestamp: order.timestamp,
+        prodotti,
+        totaleOrdine: order.totale,
+        note: order.note || '',
+        suffissoTitolo: null
+    });
+
+    await printWithPrinter(printerName, bufferUnico);
+    console.log(`Ristampa termica dell'ordine #${orderId} completata.`);
+}
+
+// ================== FINE HELPER DI STAMPA ==================
 
 io.on('connection', socket => {
     console.log('Nuovo client connesso')
@@ -616,130 +940,6 @@ io.on('connection', socket => {
     // Invia gli ordini correnti appena si connette
     socket.emit('sync-orders', orders)
     socket.emit('sync-product', products)
-
-    // Riceve nuovi ordini dal client e li broadcasta agli altri
-    // --- FUNZIONI PER LA GENERAZIONE DELLO SCONTRINO GRAFICO ---
-// Queste funzioni sono state messe qui per ordine. Non modificano la logica esistente.
-
-    const helpers = {
-        creaRigaColonne: function(colSinistra, colCentro, colDestra, larghezze) {
-            const [larghSinistra, larghCentro, larghDestra] = larghezze;
-            let righe = [];
-            let testoSinistraRimanente = colSinistra;
-            let primoGiro = true;
-
-            while (testoSinistraRimanente.length > 0) {
-                let parteSinistra = testoSinistraRimanente.substring(0, larghSinistra);
-                testoSinistraRimanente = testoSinistraRimanente.substring(larghSinistra);
-                parteSinistra = parteSinistra.padEnd(larghSinistra, ' ');
-
-                if (primoGiro) {
-                    const parteCentro = colCentro.padStart(larghCentro, ' ');
-                    const parteDestra = colDestra.padStart(larghDestra, ' ');
-                    righe.push(parteSinistra + parteCentro + parteDestra);
-                    primoGiro = false;
-                } else {
-                    righe.push(parteSinistra);
-                }
-            }
-            return righe;
-        },
-        creaSeparatore: function(larghezzaTotale) {
-            return ''.padEnd(larghezzaTotale, '-');
-        }
-    };
-
-    function generaScontrinoTermicoAvanzato(datiOrdine, config = { larghezzaCaratteri: 42 }) {
-        const { larghezzaCaratteri } = config;
-        let scontrino = [];
-        // Rimuovi questa riga se presente: const simboloEuro = '\x80';
-
-        const dataOraOrdine = new Date(datiOrdine.dataOra);
-        const addLeadingZero = (num) => num < 10 ? '0' + num : num;
-        const giorno = addLeadingZero(dataOraOrdine.getDate());
-        const mese = addLeadingZero(dataOraOrdine.getMonth() + 1);
-        const anno = dataOraOrdine.getFullYear();
-        const ore = addLeadingZero(dataOraOrdine.getHours());
-        const minuti = addLeadingZero(dataOraOrdine.getMinutes());
-
-        const dataFormattata = `${giorno}/${mese}/${anno} ${ore}:${minuti}`;
-
-        // Qui usi i comandi testuali che verranno interpretati da generateEscPosContent
-        // Ho rimesso i comandi di centratura e dimensione che avevamo definito
-        // Ho commentato il logo per ora, poiché richiede gestione separata e complessa
-        // scontrino.push('[COMANDO:STAMPA_LOGO]'); // Commentato, da gestire a parte se hai un logo binario
-        scontrino.push('');
-        scontrino.push(`[COMANDO:CENTRA][COMANDO:TESTO_GRANDE]${datiOrdine.titoloAzienda}[COMANDO:TESTO_NORMALE]`);
-        scontrino.push('[COMANDO:TESTO_NORMALE]'); // Assicurati che il testo successivo sia normale
-        scontrino.push(`[COMANDO:CENTRA][COMANDO:TESTO_GRANDE][COMANDO:FONT_A][COMANDO:SOTTOLINEATO]${datiOrdine.sottotitoloAzienda}[COMANDO:SOTTOLINEATO_OFF][COMANDO:TESTO_NORMALE]`);
-        scontrino.push('');
-        // Imposta definitivamente l'allineamento a sinistra per il resto dello scontrino (data, intestazioni e prodotti)
-        scontrino.push('[COMANDO:ALLINEA_SINISTRA][COMANDO:TESTO_NORMALE]');
-        scontrino.push(`Data: ${dataFormattata}`);
-        scontrino.push(`Numero scontrino: [COMANDO:TESTO_GRANDE]${datiOrdine.numeroScontrino}[COMANDO:TESTO_NORMALE]`);
-        scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
-        const larghezzeColonne = [
-            Math.floor(larghezzaCaratteri * 0.5),
-            Math.floor(larghezzaCaratteri * 0.2),
-            Math.floor(larghezzaCaratteri * 0.3)
-        ];
-
-        const sommaLarghezze = larghezzeColonne[0] + larghezzeColonne[1] + larghezzeColonne[2];
-        if (sommaLarghezze < larghezzaCaratteri) {
-            larghezzeColonne[0] += (larghezzaCaratteri - sommaLarghezze);
-        }
-
-        scontrino.push(...helpers.creaRigaColonne('Prodotto', 'N°', 'TOT', larghezzeColonne));
-        scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
-        datiOrdine.prodotti.forEach(p => {
-            // Nome prodotto base senza comandi (evita di inquinare i calcoli di larghezza)
-            let nomeProdotto = `${p.nome}`;
-            let extra = '';
-            if (p.note && p.note.trim() !== "") {
-                extra += ` - ${p.note}`;
-            }
-            if (p.quantita > 1) {
-                const prezzoUnitarioFormat = Number(p.prezzoUnitario || p.prezzo).toFixed(2);
-                extra += ` (€${prezzoUnitarioFormat} cad.)`;
-            }
-            nomeProdotto = nomeProdotto.toUpperCase() + extra;
-            const qta = p.quantita.toString();
-            const totaleRiga = `€` + Number(p.totale).toFixed(2);
-            const righeProd = helpers.creaRigaColonne(nomeProdotto, qta, totaleRiga, larghezzeColonne);
-            // Prefissa solo il comando di dimensione (allineamento già impostato prima dell'intestazione)
-            if (righeProd.length > 0) {
-                righeProd[0] = `[COMANDO:TESTO_MEDIO]` + righeProd[0];
-            }
-            scontrino.push(...righeProd);
-        });
-        scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
-        // Inseriamo il simbolo € qui come carattere normale
-        const testoTotale = `Totale: €` + Number(datiOrdine.totaleOrdine).toFixed(2);
-        // Aggiunto [COMANDO:TESTO_NORMALE] per riportare il testo alla dimensione standard dopo il totale grande.
-        scontrino.push(`[COMANDO:ALLINEA_DESTRA][COMANDO:TESTO_GRANDE]${testoTotale}[COMANDO:TESTO_NORMALE]`);
-        scontrino.push('');
-        // Stampa la nota se presente
-        if (datiOrdine.note && datiOrdine.note.trim() !== "") {
-            scontrino.push('');
-            scontrino.push(`[COMANDO:CENTRA]Nota:[COMANDO:TESTO_NORMALE] [COMANDO:GRASSETTO] ${datiOrdine.note}[COMANDO:GRASSETTO_OFF] [COMANDO:TESTO_NORMALE]`);
-            scontrino.push(helpers.creaSeparatore(larghezzaCaratteri));
-            scontrino.push('');
-            scontrino.push('');
-            scontrino.push('');
-        }
-        scontrino.push('[COMANDO:CENTRA]Grazie per il tuo acquisto!');
-        scontrino.push('');
-        scontrino.push('');
-        scontrino.push('');
-        scontrino.push('');
-        scontrino.push('');
-        scontrino.push('');
-        // Riattivato il comando [COMANDO:TAGLIA_CARTA] che ora verrà interpretato correttamente
-        scontrino.push('[COMANDO:TAGLIA_CARTA]');
-        return scontrino.join('\n');
-    }
-
-// --- TUA FUNZIONE SOCKET.IO CON LA LOGICA DI STAMPA INTEGRATA ---
 
     socket.on('new-order', async (order, cb) => {
         console.log('Nuovo ordine ricevuto:', order);
@@ -868,119 +1068,23 @@ io.on('connection', socket => {
 
         // 5. Stampa termica automatica
         try {
-            let printerName = getSelectedPrinter();
-            if (!printerName) {
-                printerName = getDefaultPrinter();
-                if (printerName) setSelectedPrinter(printerName);
-            }
-
+            const printerName = risolviStampante();
             if (printerName) {
-                // --- INIZIO BLOCCO STAMPA AVANZATA ---
-
-                // Impostazioni (modifica qui i tuoi dati)
-                const NOME_AZIENDA = currentDbName;
-                const CONFIG_STAMPANTE = { larghezzaCaratteri: 42 };
-
-                // Raggruppa prodotti per categoria e prepara array con note
                 const prodotti = Array.isArray(order.prodotti) ? order.prodotti : [];
-                const prodottiPerCategoria = {};
-                prodotti.forEach(p => {
-                    // Recupera la categoria dal DB
-                    const prodDb = db.prepare('SELECT tipologia FROM prodotti WHERE id = ?').get(p.id);
-                    const tipologia = prodDb ? prodDb.tipologia : 'Senza categoria';
-                    if (!prodottiPerCategoria[tipologia]) prodottiPerCategoria[tipologia] = [];
-                    prodottiPerCategoria[tipologia].push({
-                        nome: p.nome,
-                        quantita: p.quantita,
-                        prezzo: p.prezzo,
-                        totale: Number(p.prezzo) * Number(p.quantita),
-                        note: p.note || ""
-                    });
-                });
-
-                // Recupera i nomi delle categorie
-                const categorieNomi = {};
-                Object.keys(prodottiPerCategoria).forEach(catId => {
-                    const cat = db.prepare('SELECT name FROM categories WHERE id = ?').get(catId);
-                    categorieNomi[catId] = cat ? cat.name : `Categoria #${catId}`;
-                });
-
-                // Stampa scontrini per categoria
-                let bufferUnico = Buffer.alloc(0);
-                // Scegli l'immagine da stampare: priorità a last_uploaded.png/jpg, altrimenti logo.png
-                let logoPath = null;
-                const imgDir = path.join(__dirname, 'img');
-                // Cerca l'ultima immagine caricata (uploaded_*.png/jpg)
-                const files = fs.readdirSync(imgDir)
-                    .filter(f => f.startsWith('uploaded_') && (f.endsWith('.png') || f.endsWith('.jpg')))
-                    .sort((a, b) => {
-                        // Ordina per timestamp decrescente
-                        const getTs = name => {
-                            const match = name.match(/uploaded_(\d+)/);
-                            return match ? parseInt(match[1]) : 0;
-                        };
-                        return getTs(b) - getTs(a);
-                    });
-                if (files.length > 0) {
-                    logoPath = path.join(imgDir, files[0]);
-                } else if (fs.existsSync(path.join(imgDir, 'logo.png'))) {
-                    logoPath = path.join(imgDir, 'logo.png');
-                }
-                let logoBuffer = Buffer.alloc(0);
-                try {
-                    if (logoPath) {
-                        logoBuffer = await getLogoEscPosBuffer(logoPath);
-                        logoBuffer = Buffer.concat([logoBuffer, Buffer.from([])]);
-                    }
-                } catch (e) {
-                    console.error('Errore caricamento logo:', e);
-                }
-                for (const [catId, prodottiCat] of Object.entries(prodottiPerCategoria)) {
-                    const datiScontrinoCat = {
-                        numeroScontrino: info.lastInsertRowid,
-                        dataOra: order.timestamp,
-                        titoloAzienda: NOME_AZIENDA,
-                        sottotitoloAzienda: categorieNomi[catId],
-                        prodotti: prodottiCat,
-                        totaleOrdine: prodottiCat.reduce((acc, p) => acc + Number(p.totale), 0),
-                        note: ''
-                    };
-                    const receiptContentCat = generaScontrinoTermicoAvanzato(datiScontrinoCat, CONFIG_STAMPANTE);
-                    const contentCat = generateEscPosContent(receiptContentCat);
-                    bufferUnico = Buffer.concat([bufferUnico, logoBuffer, contentCat]);
-                }
-                // Stampa anche lo scontrino riepilogativo dell'ordine
-                if (getPrintSummarySetting()) {
-                    const datiScontrinoRiepilogo = {
-                        numeroScontrino: info.lastInsertRowid,
-                        dataOra: order.timestamp,
-                        titoloAzienda: NOME_AZIENDA,
-                        sottotitoloAzienda: 'Riepilogo Ordine',
-                        prodotti: prodotti.map(p => ({
-                            nome: p.nome,
-                            quantita: p.quantita,
-                            prezzo: p.prezzo,
-                            totale: Number(p.prezzo) * Number(p.quantita),
-                            note: p.note || ''
-                        })),
-                        totaleOrdine: order.totale,
-                        note: order.note || ''
-                    };
-                    const receiptContentRiepilogo = generaScontrinoTermicoAvanzato(datiScontrinoRiepilogo, CONFIG_STAMPANTE);
-                    const contentRiepilogo = generateEscPosContent(receiptContentRiepilogo);
-                    bufferUnico = Buffer.concat([bufferUnico, logoBuffer, Buffer.from([0x0A]), contentRiepilogo]);
-                }
-                // --- FINE BLOCCO STAMPA AVANZATA ---
-                printWithPrinter(printerName, bufferUnico)
-                    .then(() => console.log('Stampa termica completata con layout avanzato (job per categoria).'))
-                    .catch(err => console.error('Errore stampa termica:', err));
+                costruisciBufferStampa({
+                    orderId: info.lastInsertRowid,
+                    timestamp: order.timestamp,
+                    prodotti,
+                    totaleOrdine: order.totale,
+                    note: order.note || '',
+                    suffissoTitolo: null
+                }).then(bufferUnico => printWithPrinter(printerName, bufferUnico))
+                  .then(() => console.log('Stampa termica completata.'))
+                  .catch(err => console.error('Errore stampa termica:', err));
             }
         } catch (e) {
             console.error('Errore generazione scontrino termico:', e);
         }
-
-        // 6. Genera PDF (opzionale)
-        // ... [il tuo codice esistente per generare PDF] ...
     });
 
     socket.on('remove-order', (id, cb) => {
@@ -1275,157 +1379,27 @@ io.on('connection', socket => {
         }
     });
 
-    // Nuovo evento per stampare scontrino di ordine modificato
     socket.on('print-modified-order', async (orderId, cb) => {
         try {
             const order = getOrderById(orderId);
-            if (!order) {
-                if (cb) cb({ success: false, error: 'Ordine non trovato' });
-                return;
-            }
+            if (!order) { if (cb) cb({ success: false, error: 'Ordine non trovato' }); return; }
 
-            let printerName = getSelectedPrinter();
-            if (!printerName) {
-                printerName = getDefaultPrinter();
-                if (printerName) setSelectedPrinter(printerName);
-            }
+            const printerName = risolviStampante();
+            if (!printerName) { if (cb) cb({ success: false, error: 'Nessuna stampante disponibile' }); return; }
 
-            if (!printerName) {
-                if (cb) cb({ success: false, error: 'Nessuna stampante disponibile' });
-                return;
-            }
-
-            // Parse prodotti dall'ordine
-            let prodotti = [];
-            try {
-                prodotti = JSON.parse(order.recapOrdine);
-            } catch {
-                // Fallback per vecchi ordini
-                const entries = order.recapOrdine.split(',').map(p => p.trim()).filter(p => p);
-                const prodottiMap = {};
-                entries.forEach(entry => {
-                    const [productIdStr, prezzoStr] = entry.split(':');
-                    const productId = parseInt(productIdStr);
-                    const prezzo = parseFloat(prezzoStr);
-                    if (!isNaN(productId)) {
-                        if (!prodottiMap[productId]) {
-                            const prodottoDB = db.prepare('SELECT nome FROM prodotti WHERE id = ?').get(productId);
-                            prodottiMap[productId] = {
-                                id: productId,
-                                nome: prodottoDB ? prodottoDB.nome : `Prodotto #${productId}`,
-                                prezzo: prezzo,
-                                quantita: 1,
-                                note: ""
-                            };
-                        } else {
-                            prodottiMap[productId].quantita += 1;
-                        }
-                    }
-                });
-                prodotti = Object.values(prodottiMap);
-            }
-
-            // Impostazioni stampa
-            const NOME_AZIENDA = currentDbName;
-            const CONFIG_STAMPANTE = { larghezzaCaratteri: 42 };
-
-            // Raggruppa prodotti per categoria
-            const prodottiPerCategoria = {};
-            prodotti.forEach(p => {
-                const prodDb = db.prepare('SELECT tipologia FROM prodotti WHERE id = ?').get(p.id);
-                const tipologia = prodDb ? prodDb.tipologia : 'Senza categoria';
-                if (!prodottiPerCategoria[tipologia]) prodottiPerCategoria[tipologia] = [];
-                prodottiPerCategoria[tipologia].push({
-                    nome: p.nome,
-                    quantita: p.quantita,
-                    prezzo: p.prezzo,
-                    totale: Number(p.prezzo) * Number(p.quantita),
-                    note: p.note || ""
-                });
+            const prodotti = parseRecapProdotti(order.recapOrdine);
+            const bufferUnico = await costruisciBufferStampa({
+                orderId: order.id,
+                timestamp: order.timestamp,
+                prodotti,
+                totaleOrdine: order.totale,
+                note: order.note || '',
+                suffissoTitolo: '(MODIFICATO)'
             });
 
-            // Recupera i nomi delle categorie
-            const categorieNomi = {};
-            Object.keys(prodottiPerCategoria).forEach(catId => {
-                const cat = db.prepare('SELECT name FROM categories WHERE id = ?').get(catId);
-                categorieNomi[catId] = cat ? cat.name : `Categoria #${catId}`;
-            });
-
-            // Prepara buffer per stampa
-            let bufferUnico = Buffer.alloc(0);
-
-            // Gestione logo
-            let logoPath = null;
-            const imgDir = path.join(__dirname, 'img');
-            const files = fs.readdirSync(imgDir)
-                .filter(f => f.startsWith('uploaded_') && (f.endsWith('.png') || f.endsWith('.jpg')))
-                .sort((a, b) => {
-                    const getTs = name => {
-                        const match = name.match(/uploaded_(\d+)/);
-                        return match ? parseInt(match[1]) : 0;
-                    };
-                    return getTs(b) - getTs(a);
-                });
-            if (files.length > 0) {
-                logoPath = path.join(imgDir, files[0]);
-            } else if (fs.existsSync(path.join(imgDir, 'logo.png'))) {
-                logoPath = path.join(imgDir, 'logo.png');
-            }
-
-            let logoBuffer = Buffer.alloc(0);
-            try {
-                if (logoPath) {
-                    logoBuffer = await getLogoEscPosBuffer(logoPath);
-                    logoBuffer = Buffer.concat([logoBuffer, Buffer.from([])]);
-                }
-            } catch (e) {
-                console.error('Errore caricamento logo:', e);
-            }
-
-            // Stampa scontrini per categoria
-            for (const [catId, prodottiCat] of Object.entries(prodottiPerCategoria)) {
-                const datiScontrinoCat = {
-                    numeroScontrino: order.id,
-                    dataOra: order.timestamp,
-                    titoloAzienda: NOME_AZIENDA,
-                    sottotitoloAzienda: `${categorieNomi[catId]} (MODIFICATO)`,
-                    prodotti: prodottiCat,
-                    totaleOrdine: prodottiCat.reduce((acc, p) => acc + Number(p.totale), 0),
-                    note: ''
-                };
-                const receiptContentCat = generaScontrinoTermicoAvanzato(datiScontrinoCat, CONFIG_STAMPANTE);
-                const contentCat = generateEscPosContent(receiptContentCat);
-                bufferUnico = Buffer.concat([bufferUnico, logoBuffer, contentCat]);
-            }
-
-            // Stampa scontrino riepilogativo
-            if (getPrintSummarySetting()) {
-                const datiScontrinoRiepilogo = {
-                    numeroScontrino: order.id,
-                    dataOra: order.timestamp,
-                    titoloAzienda: NOME_AZIENDA,
-                    sottotitoloAzienda: 'Riepilogo Ordine (MODIFICATO)',
-                    prodotti: prodotti.map(p => ({
-                        nome: p.nome,
-                        quantita: p.quantita,
-                        prezzo: p.prezzo,
-                        totale: Number(p.prezzo) * Number(p.quantita),
-                        note: p.note || ''
-                    })),
-                    totaleOrdine: order.totale,
-                    note: order.note || ''
-                };
-                const receiptContentRiepilogo = generaScontrinoTermicoAvanzato(datiScontrinoRiepilogo, CONFIG_STAMPANTE);
-                const contentRiepilogo = generateEscPosContent(receiptContentRiepilogo);
-                bufferUnico = Buffer.concat([bufferUnico, logoBuffer, Buffer.from([0x0A]), contentRiepilogo]);
-            }
-
-            // Esegui stampa
             await printWithPrinter(printerName, bufferUnico);
             console.log(`Stampa termica completata per ordine modificato #${order.id}`);
-
             if (cb) cb({ success: true, message: 'Scontrino stampato con successo' });
-
         } catch (e) {
             console.error('Errore stampa ordine modificato:', e);
             if (cb) cb({ success: false, error: e.message });
@@ -1626,137 +1600,12 @@ io.on('connection', socket => {
             if (cb) cb({ success: false, error: error.message });
         }
     });
-    async function stampaOrdineById(orderId) {
-        try {
-            const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
-            if (!order) {
-                throw new Error(`Ordine con ID ${orderId} non trovato.`);
-            }
-
-            let printerName = getSelectedPrinter();
-            if (!printerName) {
-                printerName = getDefaultPrinter();
-                if (printerName) setSelectedPrinter(printerName);
-            }
-
-            if (!printerName) {
-                throw new Error('Nessuna stampante disponibile o configurata.');
-            }
-
-            const NOME_AZIENDA = currentDbName;
-            const CONFIG_STAMPANTE = { larghezzaCaratteri: 42 };
-
-            let prodotti = [];
-            try {
-                prodotti = JSON.parse(order.recapOrdine);
-            } catch (e) {
-                console.error("Formato recapOrdine non JSON, tentativo di fallback non implementato per la ristampa.", e);
-                // Per semplicità, questa funzione di ristampa supporterà solo il nuovo formato JSON.
-                // Se necessario, si può aggiungere qui la logica di parsing del vecchio formato stringa.
-                throw new Error("Impossibile leggere i prodotti dell'ordine. Formato obsoleto non supportato per la ristampa.");
-            }
-
-            const prodottiPerCategoria = {};
-            prodotti.forEach(p => {
-                const prodDb = db.prepare('SELECT tipologia FROM prodotti WHERE id = ?').get(p.id);
-                const tipologia = prodDb ? prodDb.tipologia : 'Senza categoria';
-                if (!prodottiPerCategoria[tipologia]) prodottiPerCategoria[tipologia] = [];
-                prodottiPerCategoria[tipologia].push({
-                    nome: p.nome,
-                    quantita: p.quantita,
-                    prezzo: p.prezzo,
-                    totale: Number(p.prezzo) * Number(p.quantita),
-                    note: p.note || ""
-                });
-            });
-
-            const categorieNomi = {};
-            Object.keys(prodottiPerCategoria).forEach(catId => {
-                const cat = db.prepare('SELECT name FROM categories WHERE id = ?').get(catId);
-                categorieNomi[catId] = cat ? cat.name : `Categoria #${catId}`;
-            });
-
-            let bufferUnico = Buffer.alloc(0);
-            let logoPath = null;
-            const imgDir = path.join(__dirname, 'img');
-            const files = fs.readdirSync(imgDir)
-                .filter(f => f.startsWith('uploaded_') && (f.endsWith('.png') || f.endsWith('.jpg')))
-                .sort((a, b) => {
-                    const getTs = name => {
-                        const match = name.match(/uploaded_(\d+)/);
-                        return match ? parseInt(match[1]) : 0;
-                    };
-                    return getTs(b) - getTs(a);
-                });
-            if (files.length > 0) {
-                logoPath = path.join(imgDir, files[0]);
-            } else if (fs.existsSync(path.join(imgDir, 'logo.png'))) {
-                logoPath = path.join(imgDir, 'logo.png');
-            }
-
-            let logoBuffer = Buffer.alloc(0);
-            if ( logoPath) {
-                try {
-                    logoBuffer = await getLogoEscPosBuffer(logoPath);
-                } catch (e) {
-                    console.error('Errore caricamento logo per ristampa:', e);
-                }
-            }
-
-            for (const [catId, prodottiCat] of Object.entries(prodottiPerCategoria)) {
-                const datiScontrinoCat = {
-                    numeroScontrino: order.id,
-                    dataOra: order.timestamp,
-                    titoloAzienda: NOME_AZIENDA,
-                    sottotitoloAzienda: categorieNomi[catId],
-                    prodotti: prodottiCat,
-                    totaleOrdine: prodottiCat.reduce((acc, p) => acc + Number(p.totale), 0),
-                    note: ''
-                };
-                const receiptContentCat = generaScontrinoTermicoAvanzato(datiScontrinoCat, CONFIG_STAMPANTE);
-                const contentCat = generateEscPosContent(receiptContentCat);
-                bufferUnico = Buffer.concat([bufferUnico, logoBuffer, contentCat]);
-            }
-
-            if (getPrintSummarySetting()) {
-                const datiScontrinoRiepilogo = {
-                    numeroScontrino: order.id,
-                    dataOra: order.timestamp,
-                    titoloAzienda: NOME_AZIENDA,
-                    sottotitoloAzienda: 'Riepilogo Ordine',
-                    prodotti: prodotti.map(p => ({
-                        nome: p.nome,
-                        quantita: p.quantita,
-                        prezzo: p.prezzo,
-                        totale: Number(p.prezzo) * Number(p.quantita),
-                        note: p.note || ''
-                    })),
-                    totaleOrdine: order.totale,
-                    note: order.note || ''
-                };
-                const receiptContentRiepilogo = generaScontrinoTermicoAvanzato(datiScontrinoRiepilogo, CONFIG_STAMPANTE);
-                const contentRiepilogo = generateEscPosContent(receiptContentRiepilogo);
-                bufferUnico = Buffer.concat([bufferUnico, logoBuffer, Buffer.from([0x0A]), contentRiepilogo]);
-            }
-
-            await printWithPrinter(printerName, bufferUnico);
-            console.log(`Ristampa termica dell'ordine #${orderId} completata.`);
-
-        } catch (error) {
-            console.error(`Errore in stampaOrdineById per l'ordine #${orderId}:`, error);
-            throw error; // Rilancia l'errore per essere gestito dal chiamante (l'evento socket)
-        }
-    }
 
 })
-    server.listen(3000,'0.0.0.0', () => {
-        console.log('Server Socket.IO in ascolto su http://localhost:3000')
-    })
-
 const PORT = 3000;
-server.listen(PORT, () => {
-  console.log('Backend pronto:', Date.now());
-  console.log(`Backend: Server listening on port ${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+    console.log('Backend pronto:', Date.now());
+    console.log(`Server in ascolto su http://0.0.0.0:${PORT}`);
 });
 
 function getOrderById(id) {

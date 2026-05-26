@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import {useRouter} from "vue-router";
 const router = useRouter()
 
@@ -8,6 +8,95 @@ const urlServer = isElectron ? 'localhost' : window.location.hostname;
 const selectedImage = ref(null)
 const imagePreview = ref('')
 const isUploading = ref(false)
+
+// ===== CONFIGURAZIONE STAMPANTE =====
+const tipoPrinter   = ref('sistema')   // 'sistema' | 'tcp'
+const systemPrinters = ref([])
+const selectedSystemPrinter = ref('')
+const tcpHost       = ref('')
+const tcpPort       = ref(9100)
+const isTesting     = ref(false)
+const isSaving      = ref(false)
+const tcpTestResult = ref(null)        // { success, message }
+const printerSaveMsg = ref('')
+
+const currentPrinterLabel = computed(() => {
+    if (tipoPrinter.value === 'tcp' && tcpHost.value)
+        return `TCP ${tcpHost.value}:${tcpPort.value}`
+    if (tipoPrinter.value === 'sistema' && selectedSystemPrinter.value)
+        return selectedSystemPrinter.value
+    return null
+})
+
+async function loadPrinterConfig() {
+    try {
+        const res = await fetch(`http://${urlServer}:3000/stampante-config`)
+        if (!res.ok) return
+        const cfg = await res.json()
+        tipoPrinter.value = cfg.tipo || 'sistema'
+        if (cfg.tipo === 'tcp') {
+            tcpHost.value  = cfg.tcpHost || ''
+            tcpPort.value  = cfg.tcpPort || 9100
+        } else {
+            selectedSystemPrinter.value = cfg.printer || ''
+        }
+    } catch { /* server non raggiungibile */ }
+}
+
+async function loadSystemPrinters() {
+    try {
+        const res = await fetch(`http://${urlServer}:3000/stampanti`)
+        if (!res.ok) return
+        systemPrinters.value = await res.json()
+    } catch { systemPrinters.value = [] }
+}
+
+async function salvaSistemaPrinter() {
+    if (!selectedSystemPrinter.value) return
+    isSaving.value = true
+    printerSaveMsg.value = ''
+    try {
+        const res = await fetch(`http://${urlServer}:3000/seleziona-stampante`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tipo: 'sistema', printerName: selectedSystemPrinter.value })
+        })
+        printerSaveMsg.value = res.ok ? '✓ Stampante salvata' : '✗ Errore nel salvataggio'
+    } catch { printerSaveMsg.value = '✗ Errore di rete' }
+    finally { isSaving.value = false }
+}
+
+async function testTcp() {
+    if (!tcpHost.value) return
+    isTesting.value = true
+    tcpTestResult.value = null
+    try {
+        const res = await fetch(`http://${urlServer}:3000/test-tcp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tcpHost: tcpHost.value, tcpPort: tcpPort.value })
+        })
+        const data = await res.json()
+        tcpTestResult.value = { success: res.ok, message: res.ok ? data.message : (data.error || 'Errore') }
+    } catch (e) { tcpTestResult.value = { success: false, message: e.message } }
+    finally { isTesting.value = false }
+}
+
+async function salvaTcpPrinter() {
+    if (!tcpHost.value) return
+    isSaving.value = true
+    printerSaveMsg.value = ''
+    try {
+        const res = await fetch(`http://${urlServer}:3000/seleziona-stampante`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tipo: 'tcp', tcpHost: tcpHost.value, tcpPort: tcpPort.value })
+        })
+        printerSaveMsg.value = res.ok ? '✓ Stampante TCP salvata' : '✗ Errore nel salvataggio'
+    } catch { printerSaveMsg.value = '✗ Errore di rete' }
+    finally { isSaving.value = false }
+}
+// ===== FINE CONFIGURAZIONE STAMPANTE =====
 
 function handleImageChange(event) {
     const file = event.target.files[0]
@@ -161,6 +250,8 @@ onMounted(async () => {
     } catch (e) {
         // errore silenzioso
     }
+    await loadPrinterConfig()
+    await loadSystemPrinters()
 })
 
 async function updatePrintSummaryReceipt() {
@@ -194,6 +285,99 @@ function tornaIndietro() {
                 Stampa scontrino riepilogativo
             </label>
         </div>
+        <!-- ===== CONFIGURAZIONE STAMPANTE ===== -->
+        <div class="printer-config-section">
+            <h2>Configurazione Stampante</h2>
+
+            <!-- Selettore tipo -->
+            <div class="tipo-selector">
+                <button
+                    :class="['tipo-btn', { active: tipoPrinter === 'sistema' }]"
+                    @click="tipoPrinter = 'sistema'; tcpTestResult = null; printerSaveMsg = ''"
+                >
+                    Stampante di sistema
+                </button>
+                <button
+                    :class="['tipo-btn', { active: tipoPrinter === 'tcp' }]"
+                    @click="tipoPrinter = 'tcp'; tcpTestResult = null; printerSaveMsg = ''"
+                >
+                    Rete TCP (porta 9100)
+                </button>
+            </div>
+
+            <!-- Modalità sistema -->
+            <div v-if="tipoPrinter === 'sistema'" class="printer-panel">
+                <p class="printer-hint">
+                    Usa <strong>lpr</strong> su macOS/Linux o lo <strong>spooler Windows</strong> per inviare dati RAW.
+                    Richiede che la stampante sia installata nel sistema operativo.
+                </p>
+                <div class="printer-row">
+                    <select v-model="selectedSystemPrinter" class="printer-select">
+                        <option value="" disabled>Seleziona una stampante...</option>
+                        <option v-for="p in systemPrinters" :key="p" :value="p">{{ p }}</option>
+                    </select>
+                    <button class="btn-primary" @click="salvaSistemaPrinter" :disabled="!selectedSystemPrinter || isSaving">
+                        {{ isSaving ? 'Salvataggio...' : 'Salva' }}
+                    </button>
+                </div>
+                <p v-if="systemPrinters.length === 0" class="printer-hint warn">
+                    Nessuna stampante trovata nel sistema.
+                </p>
+            </div>
+
+            <!-- Modalità TCP -->
+            <div v-if="tipoPrinter === 'tcp'" class="printer-panel">
+                <p class="printer-hint">
+                    Connessione diretta via socket TCP alla porta <strong>9100</strong> della stampante di rete.
+                    Funziona su Mac, Windows e Linux senza driver.
+                </p>
+                <div class="tcp-fields">
+                    <label>
+                        Indirizzo IP
+                        <input
+                            v-model="tcpHost"
+                            placeholder="es. 192.168.1.100"
+                            class="tcp-input"
+                            @input="tcpTestResult = null"
+                        />
+                    </label>
+                    <label>
+                        Porta
+                        <input
+                            v-model.number="tcpPort"
+                            type="number"
+                            min="1"
+                            max="65535"
+                            class="tcp-input-small"
+                        />
+                    </label>
+                </div>
+                <div class="tcp-actions">
+                    <button class="btn-secondary" @click="testTcp" :disabled="!tcpHost || isTesting">
+                        {{ isTesting ? 'Test in corso...' : 'Testa connessione' }}
+                    </button>
+                    <button class="btn-primary" @click="salvaTcpPrinter" :disabled="!tcpHost || isSaving">
+                        {{ isSaving ? 'Salvataggio...' : 'Salva' }}
+                    </button>
+                </div>
+                <div v-if="tcpTestResult" :class="['test-result', tcpTestResult.success ? 'ok' : 'err']">
+                    {{ tcpTestResult.message }}
+                </div>
+            </div>
+
+            <!-- Stampante attiva -->
+            <div class="current-printer">
+                <span v-if="currentPrinterLabel">
+                    Stampante attiva: <strong>{{ currentPrinterLabel }}</strong>
+                </span>
+                <span v-else class="warn">Nessuna stampante configurata</span>
+            </div>
+            <p v-if="printerSaveMsg" :class="['save-msg', printerSaveMsg.startsWith('✓') ? 'ok' : 'err']">
+                {{ printerSaveMsg }}
+            </p>
+        </div>
+        <!-- ===== FINE CONFIGURAZIONE STAMPANTE ===== -->
+
         <!-- Placeholder per future configurazioni -->
         <div class="image-upload-section">
             <div class="text">
@@ -268,6 +452,156 @@ function tornaIndietro() {
     h1 {
         font-size: 2.5em;
         margin-top: 5px;
+    }
+
+    .printer-config-section {
+        background: #fff;
+        border-radius: 8px;
+        padding: 1.25rem 1.5rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 4px 8px rgba(0,0,0,.08);
+
+        h2 { margin-top: 0; margin-bottom: 1rem; }
+
+        .tipo-selector {
+            display: flex;
+            gap: .75rem;
+            margin-bottom: 1rem;
+
+            .tipo-btn {
+                flex: 1;
+                padding: .6rem 1rem;
+                border: 2px solid #ccc;
+                border-radius: 6px;
+                background: #f5f5f5;
+                cursor: pointer;
+                font-weight: 600;
+                transition: all .2s;
+
+                &.active {
+                    border-color: #2196F3;
+                    background: #e3f2fd;
+                    color: #1565C0;
+                }
+            }
+        }
+
+        .printer-panel {
+            animation: fadeIn .2s ease;
+        }
+
+        .printer-hint {
+            font-size: .875rem;
+            color: #555;
+            margin: 0 0 .75rem;
+            &.warn { color: #e65100; }
+        }
+
+        .printer-row {
+            display: flex;
+            gap: .75rem;
+            align-items: center;
+
+            .printer-select {
+                flex: 1;
+                padding: .5rem;
+                border: 1px solid #ccc;
+                border-radius: 6px;
+                font-size: 1rem;
+            }
+        }
+
+        .tcp-fields {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: .75rem;
+
+            label {
+                display: flex;
+                flex-direction: column;
+                gap: .25rem;
+                font-weight: 500;
+                font-size: .9rem;
+            }
+
+            .tcp-input {
+                padding: .5rem;
+                border: 1px solid #ccc;
+                border-radius: 6px;
+                font-size: 1rem;
+                width: 200px;
+            }
+
+            .tcp-input-small {
+                padding: .5rem;
+                border: 1px solid #ccc;
+                border-radius: 6px;
+                font-size: 1rem;
+                width: 80px;
+            }
+        }
+
+        .tcp-actions {
+            display: flex;
+            gap: .75rem;
+            margin-bottom: .5rem;
+        }
+
+        .btn-primary {
+            padding: .5rem 1.25rem;
+            background: #2196F3;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background .2s;
+            &:hover:not(:disabled) { background: #1976D2; }
+            &:disabled { opacity: .5; cursor: not-allowed; }
+        }
+
+        .btn-secondary {
+            padding: .5rem 1.25rem;
+            background: #fff;
+            color: #2196F3;
+            border: 2px solid #2196F3;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all .2s;
+            &:hover:not(:disabled) { background: #e3f2fd; }
+            &:disabled { opacity: .5; cursor: not-allowed; }
+        }
+
+        .test-result {
+            padding: .5rem .75rem;
+            border-radius: 6px;
+            font-size: .9rem;
+            font-weight: 500;
+            margin-top: .25rem;
+            &.ok  { background: #e8f5e9; color: #2e7d32; }
+            &.err { background: #ffebee; color: #c62828; }
+        }
+
+        .current-printer {
+            margin-top: 1rem;
+            font-size: .9rem;
+            color: #444;
+            .warn { color: #e65100; }
+        }
+
+        .save-msg {
+            margin-top: .5rem;
+            font-size: .875rem;
+            font-weight: 600;
+            &.ok  { color: #2e7d32; }
+            &.err { color: #c62828; }
+        }
+    }
+
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(-4px); }
+        to   { opacity: 1; transform: translateY(0); }
     }
 
     .image-upload-section {
